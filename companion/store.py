@@ -125,6 +125,11 @@ class Store:
             return None
         return json.loads(row['data'])
 
+    def revoke_session(self,user_id,token):
+        digest=hashlib.sha256(token.encode()).hexdigest()
+        with self.transaction():
+            self.connection.execute('DELETE FROM sessions WHERE token_hash=? AND user_id=?',(digest,user_id))
+
     def users(self):
         with self.lock:
             return [json.loads(r[0]) for r in self.connection.execute('SELECT data FROM users')]

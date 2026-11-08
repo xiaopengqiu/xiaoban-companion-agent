@@ -1,0 +1,17 @@
+{
+  "name": "wearable-companion-edge",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs",
+    "db:generate": "drizzle-kit generate --name companion"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.31.0",
+    "drizzle-orm": "^0.44.0",
+    "esbuild": "^0.28.2",
+    "miniflare": "4.20260730.0"
+  }
+}

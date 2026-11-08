@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
+import ipaddress
 import logging
 import os
 from pathlib import Path
 import re
 import secrets
 import sqlite3
+from threading import Lock
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -19,12 +22,62 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .agent import CompanionAgent
 from . import policy
 from .store import EventSuppressedError, Store, uid
 
 logger=logging.getLogger(__name__)
+
+
+class AuthRateLimiter:
+    """Bounded single-process abuse protection; multi-replica deployments need an edge/shared limiter."""
+    def __init__(self, window_seconds, limits):
+        self.window_seconds=window_seconds
+        self.limits=limits
+        self.buckets=OrderedDict()
+        self.lock=Lock()
+
+    def check(self, route, address, now):
+        key=(route,address)
+        stamp=now.timestamp()
+        with self.lock:
+            # Entries are capped even when arbitrary peers hit the public listener.
+            queue=self.buckets.pop(key,deque())
+            while queue and queue[0]<=stamp-self.window_seconds:
+                queue.popleft()
+            if len(queue)>=self.limits[route]:
+                self.buckets[key]=queue
+                return max(1,int(queue[0]+self.window_seconds-stamp)+1)
+            queue.append(stamp)
+            self.buckets[key]=queue
+            while len(self.buckets)>10_000:
+                self.buckets.popitem(last=False)
+        return None
+
+
+def _proxy_client(request, trusted_networks):
+    """Only remove explicitly trusted proxy hops; arbitrary XFF is not an identity."""
+    peer=request.client.host if request.client else 'unknown'
+    def trusted(address):
+        try:
+            value=ipaddress.ip_address(address)
+            return any(value in network for network in trusted_networks)
+        except ValueError:
+            return False
+    if not trusted(peer):
+        return peer
+    try:
+        hops=[str(ipaddress.ip_address(x.strip())) for x in request.headers.get('x-forwarded-for','').split(',') if x.strip()]
+    except ValueError:
+        return peer
+    # Walk from our known socket peer toward the original client. A forged
+    # leftmost value never overrides an untrusted hop closer to the proxy.
+    for address in reversed(hops):
+        if not trusted(address):
+            return address
+    return peer
 
 
 def zone_valid(value):
@@ -143,8 +196,26 @@ class DeviceInput(Payload):
     platform:Literal['android','ios']
 
 
-def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_adapter=None,wearables_client=None):
+def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_adapter=None,wearables_client=None,web_dir=None):
     """Factory: production enables the scheduler explicitly; tests inject a deterministic clock."""
+    public_mode=os.getenv('COMPANION_PUBLIC_MODE','false').lower()=='true'
+    allowed_hosts=[value.strip() for value in os.getenv('COMPANION_ALLOWED_HOSTS','').split(',') if value.strip()]
+    if public_mode and (not allowed_hosts or any('*' in value or '://' in value or '/' in value for value in allowed_hosts)):
+        raise ValueError('Public mode requires explicit COMPANION_ALLOWED_HOSTS without wildcards or URLs')
+    trusted_networks=[ipaddress.ip_network(value.strip(),strict=False) for value in os.getenv('COMPANION_TRUSTED_PROXY_IPS','').split(',') if value.strip()]
+    rate_enabled=os.getenv('COMPANION_RATE_LIMIT_ENABLED','true' if public_mode else 'false').lower()=='true'
+    def bounded_setting(name, default, minimum=1, maximum=3600):
+        value=int(os.getenv(name,str(default)))
+        if not minimum<=value<=maximum:
+            raise ValueError(f'{name} must be between {minimum} and {maximum}')
+        return value
+    limiter=AuthRateLimiter(bounded_setting('COMPANION_AUTH_RATE_WINDOW_SECONDS',60),{
+        '/api/auth/login':bounded_setting('COMPANION_LOGIN_RATE_LIMIT',10),
+        '/api/auth/register':bounded_setting('COMPANION_REGISTER_RATE_LIMIT',3),
+        '/api/demo':bounded_setting('COMPANION_DEMO_RATE_LIMIT',2),
+    })
+    public_demo_enabled=os.getenv('COMPANION_PUBLIC_DEMO_ENABLED','false').lower()=='true'
+    demo_account_cap=bounded_setting('COMPANION_PUBLIC_DEMO_MAX_ACCOUNTS',100,maximum=1000)
     store=Store(db_path or os.getenv('COMPANION_DB_PATH','data/companion.sqlite3'))
     time_source=clock or (lambda: now) if now is not None else clock
     time_source=time_source or (lambda:datetime.now(timezone.utc))
@@ -361,7 +432,11 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
                     pass
             store.close()
 
-    app=FastAPI(title='日常·陪伴',version='0.1.0',lifespan=lifespan)
+    app=FastAPI(title='日常·陪伴',version='0.1.0',lifespan=lifespan,
+                docs_url=None if public_mode else '/docs',redoc_url=None if public_mode else '/redoc',
+                openapi_url=None if public_mode else '/openapi.json')
+    if allowed_hosts:
+        app.add_middleware(TrustedHostMiddleware,allowed_hosts=allowed_hosts,www_redirect=False)
     app.state.store=store
     app.state.agent=agent
     app.state.evaluate_user=evaluate_user
@@ -382,11 +457,43 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
 
     @app.middleware('http')
     async def security_headers(request:Request,call_next):
-        if int(request.headers.get('content-length','0') or '0')>64_000:
-            return JSONResponse(status_code=413,content={'detail':'请求内容过大'})
-        response=await call_next(request)
+        response=None
+        try:
+            length=int(request.headers.get('content-length','0') or '0')
+            if length<0:
+                raise ValueError('negative length')
+        except ValueError:
+            response=JSONResponse(status_code=400,content={'detail':'无效的请求长度'})
+            length=0
+        if response is None and length>64_000:
+            response=JSONResponse(status_code=413,content={'detail':'请求内容过大'})
+        if response is None and request.method=='POST' and request.url.path in limiter.limits and rate_enabled:
+            retry=limiter.check(request.url.path,_proxy_client(request,trusted_networks),current_time())
+            if retry:
+                response=JSONResponse(status_code=429,content={'detail':'尝试次数较多，请稍后再试。'},headers={'Retry-After':str(retry)})
+        if response is None and request.url.path.startswith('/api') and request.method in {'POST','PUT','PATCH','DELETE'}:
+            # Enforce the byte cap even when Content-Length is absent/chunked.
+            # Starlette's cached request replays _body to the downstream parser.
+            chunks=[]
+            total=0
+            async for chunk in request.stream():
+                total+=len(chunk)
+                if total>64_000:
+                    response=JSONResponse(status_code=413,content={'detail':'请求内容过大'})
+                    break
+                chunks.append(chunk)
+            if response is None:
+                request._body=b''.join(chunks)
+        if response is None:
+            response=await call_next(request)
         response.headers['X-Content-Type-Options']='nosniff'
-        response.headers['Referrer-Policy']='same-origin'
+        response.headers['Referrer-Policy']='no-referrer'
+        response.headers['X-Frame-Options']='DENY'
+        response.headers['Permissions-Policy']='camera=(), microphone=(), geolocation=()'
+        if public_mode or request.url.path not in {'/docs','/redoc','/docs/oauth2-redirect'}:
+            response.headers.setdefault('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+        if public_mode:
+            response.headers['Strict-Transport-Security']='max-age=31536000'
         if request.url.path.startswith('/api'):
             response.headers['Cache-Control']='no-store'
         return response
@@ -407,6 +514,8 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
 
     @app.get('/api/health')
     def health():
+        if public_mode:
+            return {'status':'ok'}
         return {'status':'ok','mode':'model' if agent.model_configured else 'local',
                 'integrations':{'open_wearables':bool(os.getenv('OPEN_WEARABLES_API_KEY')),'memory':bool(memory_adapter and memory_adapter.enabled)}}
 
@@ -425,10 +534,20 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
             raise HTTPException(401,'邮箱或密码不正确')
         return {'token':store.session(user['id'],current_time()),'user':user_data(user)}
 
+    @app.post('/api/auth/logout')
+    def logout(authorization:str|None=Header(default=None),user=Depends(authenticated)):
+        store.revoke_session(user['id'],authorization[7:])
+        return {'logged_out':True}
+
     @app.post('/api/demo')
     def demo():
+        if public_mode and not public_demo_enabled:
+            raise HTTPException(403,'公开演示暂未启用，请创建自己的账号。')
         now_value=current_time()
-        user=store.create_user('小林 · 合成数据',uid()+'@demo.invalid',secrets.token_urlsafe(30),'Asia/Shanghai',now_value,True)
+        with store.transaction():
+            if public_mode and sum(bool(user.get('is_demo')) for user in store.users())>=demo_account_cap:
+                raise HTTPException(429,'演示名额暂满，请创建自己的账号。')
+            user=store.create_user('小林 · 合成数据',uid()+'@demo.invalid',secrets.token_urlsafe(30),'Asia/Shanghai',now_value,True)
         zone=ZoneInfo(user['timezone'])
         local=now_value.astimezone(zone)
         for offset in reversed(range(21)):
@@ -735,7 +854,7 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
         return {'registered':True}
 
     # Static mount is intentionally last so it can never shadow the API.
-    web=Path(__file__).resolve().parent.parent/'web'
+    web=Path(web_dir) if web_dir is not None else Path(__file__).resolve().parent.parent/'web'
     if web.exists():
         app.mount('/',StaticFiles(directory=web,html=True),name='web')
     return app

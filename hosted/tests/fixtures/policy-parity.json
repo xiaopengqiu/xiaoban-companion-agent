@@ -1,0 +1,31 @@
+[
+  {
+    "name":"cumulative steps and unit conversion",
+    "timezone":"Asia/Shanghai",
+    "events":[
+      {"kind":"steps","value":400,"unit":"count","start_at":"2026-11-08T03:00:00Z","source":"watch","metadata":{"aggregation":"cumulative"}},
+      {"kind":"steps","value":1200,"unit":"count","start_at":"2026-11-08T05:00:00Z","source":"watch","metadata":{"aggregation":"cumulative"}},
+      {"kind":"water","value":0.5,"unit":"l","start_at":"2026-11-08T03:00:00Z","source":"manual","metadata":{}},
+      {"kind":"water","value":350,"unit":"ml","start_at":"2026-11-08T04:00:00Z","source":"manual","metadata":{}}
+    ],
+    "expected":{"steps":1200,"sleep_hours":null,"workout_minutes":null,"water_ml":850}
+  },
+  {
+    "name":"negative timezone local day",
+    "timezone":"America/New_York",
+    "events":[
+      {"kind":"water","value":500,"unit":"ml","start_at":"2026-11-08T01:00:00Z","source":"manual","metadata":{}},
+      {"kind":"steps","value":400,"unit":"steps","start_at":"2026-11-08T05:30:00Z","source":"watch","metadata":{}}
+    ],
+    "expected":{"steps":400,"sleep_hours":null,"workout_minutes":null,"water_ml":null}
+  },
+  {
+    "name":"partial daily bucket and session duration exclusion",
+    "timezone":"Asia/Shanghai",
+    "events":[
+      {"kind":"steps","value":1400,"unit":"steps","start_at":"2026-11-08T00:00:00Z","source":"open-wearables","metadata":{"granularity":"daily_summary","summary_date":"2026-11-08","is_complete_day":false}},
+      {"kind":"sleep","value":8,"unit":"hours","start_at":"2026-11-07T14:00:00Z","end_at":"2026-11-07T22:00:00Z","source":"open-wearables","metadata":{"duration_measure":"session_duration"}}
+    ],
+    "expected":{"steps":1400,"sleep_hours":null,"workout_minutes":null,"water_ml":null}
+  }
+]

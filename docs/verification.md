@@ -4,6 +4,8 @@
 
 ## 已运行
 
+下表保留 Python/手机首版的已运行记录；Windows 与云端部署的新增范围在后文单独列出，不将它们合并为同一运行时或生产验收。
+
 | 检查 | 结果 | 覆盖范围 |
 | --- | --- | --- |
 | `.venv/Scripts/python -m pytest -q` | 71 项通过 | API、策略、Open Wearables 网络边界、记忆索引和实际 Mem0 包契约 |
@@ -55,3 +57,28 @@ Mem0 2.2.1 实包验证实际运行 Memory 与本地 Qdrant 的增改删和用�
 本机已配置 Flutter3.47.9、JDK21、Android SDK、NDK28.2.13676358 与 CMake3.22.1。初次构建遇到 Windows ASCII 工程映射盘与 Pub 缓存盘符不同的 Kotlin 增量缓存问题；在 Android 工程及配置脚本中关闭该增量缓存后，真实插件编译通过。该处理没有删除健康或推送功能。
 
 APK 编译成功不替代真机运行与健康权限/后台同步/推送验收；iOS 构建边界同上。
+
+## Windows 便携版
+
+`scripts/build-windows.ps1` 已使用当前冻结的 `companion/` 与 `web/` 构建 PyInstaller onefile EXE；用户不需要安装 Python，仍需系统 WebView2 Runtime。桌面回归 `tests/test_desktop.py` 共13项通过，覆盖资源路径、独立数据目录、HTTPS/loopback、离线配置隔离、端口复用/冲突回退、单实例锁和服务关闭。
+
+直接执行打包后的 EXE，已通过：
+
+1. `--self-test`：frozen 资源、真实本机 HTTP 的 health/demo/dashboard/chat/delete，正常停止服务。
+2. `--ui-smoke`：真实 WebView2 登录页→合成数据看板→地址设置菜单→返回本机并保留登录。
+3. 同一数据目录再次启动 `--ui-smoke --reuse-login`：复用同一端口，`restored_login=true`。
+4. 退出后0个小伴进程，本机端口无监听；额外人工观察了实际 EXE 的登录和看板界面。
+
+产物为 `desktop/dist/Xiaoban-Windows.exe` 与 `desktop/dist/Xiaoban-Windows-portable.zip`。详细报告、环境和摘要见 [desktop/VERIFICATION.md](../desktop/VERIFICATION.md)。安装包没有打入 Mem0；本机模式不连接外部集成。在线模式可以使用云端配置的可选能力，但这不等于已经验证在线设备数据或推送。
+
+## 公开 Worker / D1 的状态
+
+`hosted/` 的 Worker/D1 实现、迁移和独立测试与 Python 版本分开。云端使用 JavaScript 规则、结构化记忆和可选 HTTPS 模型，不运行 Python/LangGraph，也没有部署 Mem0。私有源码仓库为 [xiaopengqiu/xiaoban-companion-agent](https://github.com/xiaopengqiu/xiaoban-companion-agent)；公开 Web 注册不要求访问源码仓库。
+
+公开 HTTPS 访问地址为 [小伴 Web](https://xiaoban-companion.abloom-haven-3343.chatgpt.site)。2026-11-08 Sites v1 发布成功，D1 0000–0002 迁移随部署应用；对应托管源码提交 `565a1b36435d6ee8758817459f095601a6efb525`。独立 Miniflare 测试28项通过。
+
+在实际 HTTPS API 上，以两个临时合成账号通过：公开注册、双账号读写隔离、手录事件、聊天创建记忆、更正及删除记忆、退出撤销旧令牌、重新登录后记录仍存在、手动评估、匿名调度请求被401拒绝、未配置集成状态如实返回。两个验收账号及记录已通过 API 清理。限流及流式请求体边界由独立本地 D1/Python 测试覆盖，没有对公开服务做压力测试。
+
+公网 API 验收使用 PowerShell HTTP 客户端。此环境 Node fetch 遇到 Cloudflare403 HTML，不能将其当作应用 JSON；内置浏览器验收接口发生连接超时，因此本轮没有完成独立的公网浏览器端到端交互验收。共享网页在实际 Windows WebView2 中已通过登录、模拟看板和会话恢复，公网使用者仍需验证各自网络和浏览器可达性。
+
+云端已有受 secret 保护的 `POST /api/internal/evaluate`、`scheduled` 导出和 D1 调度游标；**平台定时 trigger 尚未配置**。当前没有证据支持“关闭页面后云端已自动定时陪伴”。Python 调度只在进程存活时执行，Windows 离线窗口关闭后停止。设备、外部模型、embedding、FCM/APNs 的真实凭证与实际运行验收仍未完成。

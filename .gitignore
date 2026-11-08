@@ -24,3 +24,7 @@ service-account*.json
 *.hprof
 *.jks
 *.keystore
+.venv-desktop/
+node_modules/
+.wrangler/
+dist/
