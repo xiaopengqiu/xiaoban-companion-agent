@@ -14,6 +14,8 @@
 
 打开 **http://127.0.0.1:8765**，选择“用模拟数据体验”，即可进入独立演示账号。演示使用明确标识的合成记录，无需模型密钥、手表或外部服务。也可以注册真实的空白账号，从手动记录开始。
 
+本次已成功构建 Android 调试安装包，位于 `artifacts/companion-android-debug.apk`。安装后需在登录页配置手机可访问的陪伴服务地址；默认地址面向 Android 模拟器。真实手机和 iOS 设置见 [mobile/README.md](mobile/README.md)。
+
 跨平台手动启动：
 
 ```bash

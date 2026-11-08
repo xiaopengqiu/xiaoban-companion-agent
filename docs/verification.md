@@ -50,4 +50,8 @@ Mem0 2.2.1 实包验证实际运行 Memory 与本地 Qdrant 的增改删和用�
 
 ## Android 构建
 
-Flutter、JDK21、Android platform/build-tools36 已配置，正在完成首次 NDK/Gradle 依赖准备。安装包结果在构建结束后补充；在出现 APK 与成功退出前，不将源码测试视为打包成功。
+`flutter build apk --debug` 已实际成功，退出 0；保留完整 Open Wearables 和 Firebase 插件依赖。生成 `mobile/build/app/outputs/flutter-apk/app-debug.apk`，177,902,350 bytes。交付副本为 `artifacts/companion-android-debug.apk`，使用调试签名，适合本地试用。
+
+本机已配置 Flutter3.47.9、JDK21、Android SDK、NDK28.2.13676358 与 CMake3.22.1。初次构建遇到 Windows ASCII 工程映射盘与 Pub 缓存盘符不同的 Kotlin 增量缓存问题；在 Android 工程及配置脚本中关闭该增量缓存后，真实插件编译通过。该处理没有删除健康或推送功能。
+
+APK 编译成功不替代真机运行与健康权限/后台同步/推送验收；iOS 构建边界同上。

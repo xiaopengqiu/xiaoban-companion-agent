@@ -95,6 +95,11 @@ settings = settings.replace('plugins { id("com.google.gms.google-services") vers
 if 'com.google.gms.google-services' not in settings:
     settings = settings.replace('id("dev.flutter.flutter-plugin-loader")', 'id("com.google.gms.google-services") version "4.4.4" apply false\n    id("dev.flutter.flutter-plugin-loader")')
 write(settings_file, settings)
+gradle_properties_file = ROOT / 'android/gradle.properties'
+gradle_properties = gradle_properties_file.read_text(encoding='utf-8')
+if 'kotlin.incremental=' not in gradle_properties:
+    gradle_properties += '\n# Allow Windows mapped worktree drives and Pub Cache sources on different roots.\nkotlin.incremental=false\n'
+write(gradle_properties_file, gradle_properties)
 
 info_file = ROOT / 'ios/Runner/Info.plist'
 info = plistlib.loads(info_file.read_bytes())

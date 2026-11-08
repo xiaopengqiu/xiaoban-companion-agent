@@ -36,6 +36,8 @@ flutter build apk --debug
 
 输出 `build/app/outputs/flutter-apk/app-debug.apk`，是本地试用的调试签名安装包。正式分发需要自己的签名、HTTPS 服务及商店声明，须替换生成模板中的 release 签名配置。
 
+2026-11-08 已在本机用完整健康 SDK / Firebase 依赖构建成功，APK 为177,902,350 bytes，APK v2签名验证通过；SHA256 `18afa3c35a4b75122ba899ec1d1370039f7b34e525431285b36173200fe578d6`。构建成功不等于已通过健康/推送真机验收。
+
 本次 Windows 已安装的工具：
 
 ```powershell
@@ -102,6 +104,8 @@ dart run tool/smoke_api.dart http://127.0.0.1:8765
 本次还通过 Dart 客户端对运行中的真实后端完成 demo→dashboard→event→memory更正→chat→preferences→reminder评估/反馈→删除测试数据的 HTTP 验收。
 
 本次 Flutter3.47.9 的 analyze 在中文工作区触发上游 LSP 初始化异常。同一 mobile 目录映射 ASCII 盘符后正常：先确认 `V:` 未占用，`subst V: FULL_MOBILE_PATH`，在 `V:\` 执行；完成后 `subst V: /D` 解除。映射不复制源码。
+
+Android 配置关闭了 Kotlin incremental cache，避免 Windows 映射盘工程与 C: Pub Cache 源文件跨盘符时的 `this and base files have different roots` 异常。保留完整健康 SDK / Firebase 依赖，使用正常 Kotlin 编译。
 
 尚需真机与凭证验收：部分健康权限拒绝、后台续传、真实上游绑定与去重、FCM/APNs 前后台投递、跨账号切换、iOS 签名归档。源码测试不代表这些已经通过。
 

@@ -19,3 +19,8 @@ mem0-config.json
 **/*firebase-adminsdk*.json
 service-account*.json
 .credentials/
+.kotlin/
+.gradle/
+*.hprof
+*.jks
+*.keystore
