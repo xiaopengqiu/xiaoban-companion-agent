@@ -482,11 +482,12 @@ def test_model_receives_only_bounded_authorized_relevant_event_notes(client,monk
     def upstream(request):
         captured.append(json.loads(request.content))
         return httpx.Response(200,json={'choices':[{'message':{'content':'你记录的午餐包含青菜豆腐。'}}]})
-    original_client=httpx.Client
+    original_client=httpx.AsyncClient
     def network_client(*args,**kwargs):
         kwargs['transport']=httpx.MockTransport(upstream)
         return original_client(*args,**kwargs)
-    monkeypatch.setattr(agent_module.httpx,'Client',network_client)
+    from companion import model_runtime
+    monkeypatch.setattr(model_runtime,'http_client',network_client)
     client.patch('/api/preferences',headers=h,json={'model_consent':True})
     result=client.post('/api/chat',headers=h,json={'message':'今天午餐吃了什么？'}).json()
     assert result['mode']=='model'

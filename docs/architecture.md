@@ -15,7 +15,7 @@
 
 本机与云端的账号、记录和会话不自动合并。桌面菜单与标题明确区分两种数据域；只有 Windows 在线模式、Web 和指向同一云端服务的手机才共享云账号。本机数据库不随切换在线模式自动上传。
 
-源码仓库 [xiaopengqiu/xiaoban-companion-agent](https://github.com/xiaopengqiu/xiaoban-companion-agent) 当前私有。公开 Web 设计为独立注册，源码访问权限不决定 Web 登录权限；正式公网入口尚待上线验收。
+源码仓库 [xiaopengqiu/xiaoban-companion-agent](https://github.com/xiaopengqiu/xiaoban-companion-agent) 当前私有。公开 Web 独立注册，源码访问权限不决定 Web 登录权限。公网服务已实际发布并完成多用户 API 验收。
 
 以下数据流描述 Python 联网服务；Windows 离线版从手录进入结构化事实层，Worker 则用自己的 JavaScript 实现接收 API 请求与持久化。
 
@@ -47,6 +47,10 @@
 - `hosted/drizzle/`：D1 schema 与迁移。Worker 构建将共享 `web/` 内嵌为同源资源，使用 `DB` 绑定，记录保存在云端。
 
 ## 事实与记忆
+
+v0.3新增独立的用户范围 `threads` 表，保存重要事情的状态、进展、跟进授权与明确时间。线程更改会推进上下文版本并撤销旧提醒；生活跟进不要求有健康数据，但仍遵守免打扰与全局每日预算。近期处境有有效期，过期记忆及可能带回它的旧历史不再进入模型。
+
+模型服务由管理员统一选择，配置密钥以AES-GCM保存；用户的个人模型处理授权独立生效。Python可调用同机CLI，Worker通过受保护HTTPS网关访问服务器CLI。两者只提供有界文本生成，不给普通聊天传入任意命令或共享CLI会话。角色权限每次从数据库核验，授权写入与最后管理员保护有原子条件。详见 [model-services.md](model-services.md)。
 
 每条行为保存 `kind/value/unit/start_at/end_at/source/external_id/metadata`，服务端补充内部 id 和接收/更新时间。时间必须带 UTC offset。幂等键为 `(user_id, source, external_id)`；无外部 id 的手录是独立事件。原始来源、设备、粒度和 upstream 日标签保存在 metadata。心率原始流当前不进入首版分析器。
 

@@ -1,0 +1,10 @@
+[
+  {"message":"我这周一直在赶项目，下周一还要汇报，有点担心。","suggest":true},
+  {"message":"我最近正在准备面试，希望能把自己的经历讲清楚。","suggest":true},
+  {"message":"我最近睡了几个小时？请根据已有记录回答。","suggest":false},
+  {"message":"比如一个人说我周五要面试，有点紧张，你应该怎么回应？","suggest":false},
+  {"message":"我的朋友这周在准备面试，我只是帮他问问建议。","suggest":false},
+  {"message":"请记住：我希望周末有完整的独处时间，不要频繁提醒。","suggest":false},
+  {"message":"我最近工作确实有点忙，但别把这段话存成记忆。","suggest":false},
+  {"message":"我最近没有面试计划，只是想了解这个软件的功能。","suggest":false}
+]

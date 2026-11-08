@@ -15,5 +15,8 @@ This companion extension integrates independent open-source projects; their name
 | [Drizzle](https://github.com/drizzle-team/drizzle-orm) | Resolved by hosted/package-lock.json | Apache-2.0 | D1 schema and migration generation during development. |
 | [Miniflare](https://github.com/cloudflare/workers-sdk) | 4.20260730.0 | MIT | Local Worker/D1 verification only. |
 | [esbuild](https://github.com/evanw/esbuild) | Resolved by hosted/package-lock.json | MIT | Worker bundling during development. |
+| [cryptography](https://github.com/pyca/cryptography) | Installed version captured in requirements.lock.txt | Apache-2.0 OR BSD-3-Clause | AES-GCM encryption of administrator model settings; desktop distribution includes upstream notices. |
+
+Claude Code and Codex CLI are external optional executables, not copied into this repository or bundled in the Windows application. Administrators install/authenticate them separately under their applicable service terms.
 
 HiMe and OpenVitals were research references only. Their noncommercial source code is not copied into this implementation. Omi sources are not copied. Python and Flutter package dependencies retain their own licenses; use their resolved distributions for complete transitive notices before redistribution. Model, hosting, vendor APIs and push service terms are separate from source licenses.

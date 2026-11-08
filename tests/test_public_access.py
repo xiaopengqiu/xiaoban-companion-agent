@@ -141,10 +141,10 @@ def test_browser_request_timeout_does_not_leave_auth_waiting_forever():
         pytest.skip('Node is unavailable')
     script=r'''
 const fs=require('fs'),vm=require('vm'),assert=require('node:assert/strict');
-    const source=fs.readFileSync('web/app.js','utf8').replace(/^import .*;$/m,'');
+    const source=fs.readFileSync('web/app.js','utf8').replace(/^import .*;$/gm,'');
     new vm.Script(source);
     let prefix=source.split('const post=')[0];
-const context={document:{querySelector:()=>({})},localStorage:{getItem:()=>null},SessionGuard:class{},ReminderTracker:class{},AbortController,setTimeout,clearTimeout,fetch:(_url,options)=>new Promise((_resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new DOMException('aborted','AbortError')))),DOMException};
+const context={document:{querySelector:()=>({})},localStorage:{getItem:()=>null},SessionGuard:class{},ReminderTracker:class{},DueCheckGate:class{},AbortController,setTimeout,clearTimeout,fetch:(_url,options)=>new Promise((_resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new DOMException('aborted','AbortError')))),DOMException};
 vm.createContext(context);
 vm.runInContext(prefix+';globalThis.request=api;',context);
 (async()=>{await assert.rejects(context.request('/auth/login',{timeoutMs:5}),/超时/);})().catch(error=>{console.error(error);process.exitCode=1;});
@@ -160,8 +160,8 @@ def test_cloud_registration_discloses_online_storage_and_keeps_consent_text_vali
     script=r'''
 const fs=require('fs'),vm=require('vm'),assert=require('node:assert/strict');
 const elements=new Map();
-const context={document:{querySelector(selector){if(selector==='meta[name="companion-runtime"]')return {content:'cloud'};if(!elements.has(selector))elements.set(selector,{});return elements.get(selector);}},localStorage:{getItem:()=>null},SessionGuard:class{},ReminderTracker:class{}};
-const source=fs.readFileSync('web/app.js','utf8').replace(/^import .*;$/m,'').split('setInterval(checkNewMessages')[0];
+const context={document:{querySelector(selector){if(selector==='meta[name="companion-runtime"]')return {content:'cloud'};if(!elements.has(selector))elements.set(selector,{});return elements.get(selector);}},localStorage:{getItem:()=>null},SessionGuard:class{},ReminderTracker:class{},DueCheckGate:class{}};
+const source=fs.readFileSync('web/app.js','utf8').replace(/^import .*;$/gm,'').split('setInterval(checkNewMessages')[0];
 vm.createContext(context);vm.runInContext(source+';renderAuth("register");',context);
 assert.match(elements.get('#app').innerHTML,/云端账号 · 个人记录保存在在线服务/);
 assert.match(elements.get('#app').innerHTML,/我同意小伴在在线服务中保存/);
@@ -178,8 +178,8 @@ def test_other_tab_account_change_invalidates_old_view_without_erasing_new_token
     script=r'''
 const fs=require('fs'),vm=require('vm'),assert=require('node:assert/strict');
 let stored='alice';const listeners={},elements=new Map();
-const context={document:{querySelector(selector){if(!elements.has(selector))elements.set(selector,{});return elements.get(selector);}},window:{addEventListener:(name,handler)=>listeners[name]=handler},localStorage:{getItem:()=>stored,removeItem:()=>stored=null},SessionGuard:class{replace(){}},ReminderTracker:class{reset(){}},AbortController,setTimeout,clearTimeout};
-const source=fs.readFileSync('web/app.js','utf8').replace(/^import .*;$/m,'');
+const context={document:{querySelector(selector){if(!elements.has(selector))elements.set(selector,selector==='#modal'?{close(){}}:{});return elements.get(selector);}},window:{addEventListener:(name,handler)=>listeners[name]=handler},localStorage:{getItem:()=>stored,removeItem:()=>stored=null},SessionGuard:class{replace(){}},ReminderTracker:class{reset(){}},DueCheckGate:class{reset(){}},AbortController,setTimeout,clearTimeout};
+const source=fs.readFileSync('web/app.js','utf8').replace(/^import .*;$/gm,'');
 const listener=source.match(/^window.addEventListener\('storage'.*$/m)[0];
 vm.createContext(context);vm.runInContext(source.split('setInterval(checkNewMessages')[0]+listener,context);
 stored='bob';listeners.storage({key:'companion_token',newValue:'bob'});

@@ -28,6 +28,10 @@ try {
     if ($taskProcess.ExitCode -ne 0) { throw 'Packaged smoke failed; inspect desktop log and report' }
     $taskEvidence = Get-Content -LiteralPath $taskReport -Raw | ConvertFrom-Json
     if ($taskEvidence.status -ne 'passed' -or -not $taskEvidence.frozen -or -not $taskEvidence.server_stopped) { throw 'Packaged evidence incomplete' }
+    foreach ($taskCheck in @('bundled-js-modules','context-default-expiry-inactive-retrieval-renewal','thread-create-pause-complete-and-preferences','restart-sqlite-thread-memory-preferences-chat-state','thread-delete-account-cleanup')) {
+        if ($taskEvidence.checks -notcontains $taskCheck) { throw ('Packaged v0.3 evidence missing: ' + $taskCheck) }
+    }
+    if ($taskEvidence.port -ne $taskEvidence.restart_port) { throw 'Packaged HTTP restart origin changed' }
     $taskUiReport = Join-Path $taskRoot 'desktop\dist\ui-smoke.json'
     $taskUiData = Join-Path ([IO.Path]::GetTempPath()) ('xiaoban-release-ui-' + [guid]::NewGuid().ToString('N'))
     $taskUiProcess = Start-Process -FilePath $taskExe -ArgumentList @('--ui-smoke','--data-dir',('"' + $taskUiData + '"'),'--report',('"' + $taskUiReport + '"')) -WindowStyle Hidden -PassThru
@@ -47,7 +51,9 @@ try {
     $taskLicenses = Join-Path $taskRoot 'desktop\dist\LICENSES.txt'
     Copy-Item -LiteralPath (Join-Path $taskRoot 'desktop\LICENSES.txt') -Destination $taskLicenses -Force
     Compress-Archive -LiteralPath @($taskExe, (Join-Path $taskRoot 'desktop\dist\README.txt'), $taskLicenses) -DestinationPath (Join-Path $taskRoot 'desktop\dist\Xiaoban-Windows-portable.zip') -Force
-    Get-FileHash -LiteralPath $taskExe -Algorithm SHA256 | Select-Object Path,Hash
+    foreach ($taskOutput in @($taskExe, (Join-Path $taskRoot 'desktop\dist\Xiaoban-Windows-portable.zip'))) {
+        [pscustomobject]@{Path=$taskOutput; Bytes=(Get-Item -LiteralPath $taskOutput).Length; SHA256=(Get-FileHash -LiteralPath $taskOutput -Algorithm SHA256).Hash}
+    }
 } finally {
     Pop-Location
 }

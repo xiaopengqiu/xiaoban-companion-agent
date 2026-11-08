@@ -14,24 +14,87 @@ from desktop.runtime import LocalServer, Settings, SingleInstance, data_director
 
 
 def self_test(report: Path) -> None:
+    from datetime import datetime, timedelta, timezone
     import httpx
-    result = {'status': 'failed'}
+    result = {'status': 'failed', 'frozen': bool(getattr(sys, 'frozen', False)), 'checks': []}
     with tempfile.TemporaryDirectory(prefix='xiaoban-frozen-smoke-') as directory:
         service = LocalServer(Path(directory))
         try:
             url = service.start()
+            result['port'] = service.port
             with httpx.Client(base_url=url, trust_env=False, timeout=20) as client:
+                def request(method, path, **kwargs):
+                    response = client.request(method, path, **kwargs)
+                    response.raise_for_status()
+                    return response.json()
+
                 assert client.get('/api/health').json()['mode'] == 'local'
                 assert '小伴' in client.get('/').text
-                assert client.get('/app.js').status_code == 200
-                auth = client.post('/api/demo', json={}).json()
+                for path in ['/app.js', '/lifecycle.mjs', '/companion-ui.mjs']:
+                    asset = client.get(path)
+                    assert asset.status_code == 200
+                    assert 'javascript' in asset.headers.get('content-type', '')
+                    assert asset.text.strip()
+                assert 'memoryGroups' in client.get('/companion-ui.mjs').text
+                result['checks'].append('bundled-js-modules')
+                auth = request('POST', '/api/demo', json={})
                 headers = {'Authorization': 'Bearer ' + auth['token']}
                 assert client.get('/api/dashboard', headers=headers).status_code == 200
-                reply = client.post('/api/chat', headers=headers, json={'message': '你记住了我什么？'}).json()
+
+                memory = request('POST', '/api/memories', headers=headers,
+                                 json={'text': '冻结自检：这周在筹备紫色风筝展', 'category': 'context'})
+                assert memory['is_active'] is True
+                assert datetime.fromisoformat(memory['expires_at']) - datetime.fromisoformat(memory['created_at']) == timedelta(days=7)
+                expired_at = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+                expired = request('PATCH', '/api/memories/' + memory['id'], headers=headers,
+                                  json={'expires_at': expired_at})
+                assert expired['is_active'] is False
+                reply = request('POST', '/api/chat', headers=headers, json={'message': '我之前筹备的紫色风筝展是什么？'})
                 assert reply['mode'] == 'local'
-                assert client.delete('/api/me', headers=headers).status_code == 200
-                result = {'status': 'passed', 'frozen': bool(getattr(sys, 'frozen', False)),
-                          'resources': 'web/index.html + app.js', 'local_http': 'health/demo/dashboard/chat/delete', 'port': service.port}
+                assert '紫色风筝展' not in reply['reply']
+                renewed = request('PATCH', '/api/memories/' + memory['id'], headers=headers,
+                                  json={'expires_at': None})
+                assert renewed['is_active'] is True and renewed['expires_at'] is None
+                result['checks'].append('context-default-expiry-inactive-retrieval-renewal')
+
+                thread = request('POST', '/api/threads', headers=headers,
+                                 json={'title': '冻结自检：准备自我介绍', 'details': '仅有合成数据，不需要外部模型'})
+                assert thread['status'] == 'active' and thread['revision'] == 1
+                assert thread['follow_up_enabled'] is False
+                paused = request('PATCH', '/api/threads/' + thread['id'], headers=headers, json={'status': 'paused'})
+                assert paused['status'] == 'paused' and paused['revision'] == 2
+                completed = request('PATCH', '/api/threads/' + thread['id'], headers=headers,
+                                    json={'status': 'completed', 'outcome': '合成验收已完成'})
+                assert completed['status'] == 'completed' and completed['revision'] == 3
+                preferences = {'support_style': 'listen', 'life_followups_enabled': False, 'model_consent': False}
+                saved = request('PATCH', '/api/preferences', headers=headers, json=preferences)
+                assert all(saved[key] == value for key, value in preferences.items())
+                result['checks'].append('thread-create-pause-complete-and-preferences')
+
+            service.stop()
+            assert not service.running
+            service = LocalServer(Path(directory))
+            url = service.start()
+            result['restart_port'] = service.port
+            assert result['restart_port'] == result['port']
+            with httpx.Client(base_url=url, trust_env=False, timeout=20, headers=headers) as client:
+                rows = client.get('/api/threads').json()['items']
+                persisted = next(item for item in rows if item['id'] == thread['id'])
+                assert persisted == completed
+                saved = client.get('/api/preferences').json()
+                assert all(saved[key] == value for key, value in preferences.items())
+                rows = client.get('/api/memories').json()['items']
+                persisted_memory = next(item for item in rows if item['id'] == memory['id'])
+                assert persisted_memory['is_active'] is True and persisted_memory['expires_at'] is None
+                assert len(client.get('/api/chat').json()['items']) >= 2
+                result['checks'].append('restart-sqlite-thread-memory-preferences-chat-state')
+                assert client.delete('/api/threads/' + thread['id']).status_code == 200
+                assert all(item['id'] != thread['id'] for item in client.get('/api/threads').json()['items'])
+                assert client.delete('/api/me').status_code == 200
+                assert client.get('/api/me').status_code == 401
+                result['checks'].append('thread-delete-account-cleanup')
+            result.update(status='passed', resources='web/index.html + app.js + lifecycle.mjs + companion-ui.mjs',
+                          local_http='health/demo/dashboard/context-expiry/threads/preferences/chat/restart/delete')
         finally:
             service.stop()
             result['server_stopped'] = not service.running

@@ -19,3 +19,4 @@ export const leases=sqliteTable('leases',{lease_key:text('lease_key').primaryKey
 export const limits=sqliteTable('rate_limits',{bucket:text('bucket').primaryKey(),hits:integer('hits').notNull(),reset_at:integer('reset_at').notNull()});
 export const serviceState=sqliteTable('service_state',{state_key:text('state_key').primaryKey(),value:text('value').notNull()});
 export const webhookReceipts=sqliteTable('webhook_receipts',{message_id:text('message_id').primaryKey(),user_id:owner(),state:text('state').notNull(),updated_at:integer('updated_at').notNull()});
+export const threads=sqliteTable('threads',{id:text('id').primaryKey(),user_id:owner(),data:text('data').notNull()},t=>[index('threads_user').on(t.user_id)]);

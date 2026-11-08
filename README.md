@@ -1,6 +1,6 @@
 # 小伴 · 智能穿戴陪伴 Agent
 
-将运动、睡眠、饮食和日常对话变成有依据、可更正的用户记忆；在合适的时机提供轻提醒，并根据反馈调整陪伴。
+记住你在意的事，理解近期处境，持续跟进，并按你舒服的方式交流。运动、睡眠与饮食作为生活节奏的补充信息。
 
 Python 服务采用 **Open Wearables 0.11.0 数据服务 + 自研陪伴扩展 + LangGraph + 可选 Mem0 OSS**。Open Wearables 的原始 MIT 源码通过脚本固定到提交 `183e8cc4f6de897dbd288c93d49a691f2cf721ae`，与陪伴业务独立部署。云端 Worker 采用独立的 JavaScript 规则实现与 D1，不运行 Python/LangGraph 或 Mem0。
 
@@ -10,7 +10,7 @@ Python 服务采用 **Open Wearables 0.11.0 数据服务 + 自研陪伴扩展 + 
 
 ### Windows 桌面版
 
-从 [v0.2.0 发布页](https://github.com/xiaopengqiu/xiaoban-companion-agent/releases/tag/v0.2.0) 下载 `Xiaoban-Windows-portable.zip`，解压后双击 `Xiaoban-Windows.exe`；无需预装 Python，使用系统 WebView2 Runtime。源码构建命令为 `./scripts/build-windows.ps1 -Install`，输出在 `desktop/dist/`，使用说明见 [desktop/README.md](desktop/README.md)。这是尚未商业代码签名的便携开发版。
+从 [v0.3.0 发布页](https://github.com/xiaopengqiu/xiaoban-companion-agent/releases/tag/v0.3.0) 下载 `Xiaoban-Windows-portable.zip`，解压后双击 `Xiaoban-Windows.exe`；无需预装 Python，使用系统 WebView2 Runtime。源码构建命令为 `./scripts/build-windows.ps1 -Install`，输出在 `desktop/dist/`，使用说明见 [desktop/README.md](desktop/README.md)。这是尚未商业代码签名的便携开发版。
 
 窗口菜单“数据与账户”区分**本机数据（离线）**与**在线账户（云端）**：本机数据保存在 `%LOCALAPPDATA%\Xiaoban`，使用打包的 Python/LangGraph、本地规则与结构化记忆，不连接外部模型、Mem0、穿戴或推送服务。在线模式访问配置的 HTTPS 服务，可与 Web/手机登录同一个云端账号；两种数据域不自动上传、同步或合并。窗口关闭后，本机服务与调度任务也会停止。程序优先复用本机端口并使用持久 WebView profile，端口冲突换址时需重新登录。
 
@@ -47,6 +47,10 @@ python -m companion
 
 ## 可以做什么
 
+- **在意的事**：记录面试、项目或个人目标，保存后续进展、暂停或完成；只有明确开启并约定时间后才生成跟进邀请。
+- **慢慢了解你**：偏好、目标、重要关系、陪伴边界和近期处境。近期处境默认七天到期，可以更正、续期或明确改为长期。
+- **三种陪伴方式**：听我说、一起理清、给我建议；聊天提供可编辑的记忆/事情建议，确认前不自动保存。
+- **管理员服务配置**：API URL/API Key/模型或服务器Claude/Codex两种调用方式；普通用户不能修改。管理员可向其他正式账号授权或撤销管理员，最后一位管理员受到保护。
 - **今日陪伴**：最近记录、日趋势、数据依据、提醒消息箱。
 - **行为时间线**：记录运动、睡眠、饮水、饮食和心情；支持删除和幂等同步。
 - **长期记忆**：明确偏好和目标、带证据的行为摘要；支持修改、删除和更正。明确“请记住”的对话可沉淀用户记忆。
@@ -69,6 +73,8 @@ python -m companion
 是否覆盖某个手环及指标，需要核实厂商 App 是否写入对应健康平台。首批验证范围建议选定 iPhone/Apple Watch 和一组实际 Android 设备。
 
 ## 模型与语义记忆（可选）
+
+管理员在“陪伴设置 → 模型调用配置”中配置服务，在“账号与管理员权限”中管理授权。API 与服务器 CLI 的配置、加密持久化及网关部署见 [docs/model-services.md](docs/model-services.md)。公开 Worker 的 CLI 模式需要独立服务器上的 HTTPS 网关；不会在浏览器或 Worker 内启动命令行程序。
 
 以下 Mem0 安装方式适用于 Python 服务。Windows 离线包没有打入 Mem0；云端 Worker 也没有部署 Mem0 或 LangGraph，其结构化记忆、统计和提醒由 JavaScript 规则实现。Worker 可配置兼容 HTTPS 模型 API，仍需账号明确授权后才处理必要摘要。
 

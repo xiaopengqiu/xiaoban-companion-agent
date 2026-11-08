@@ -20,13 +20,15 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .agent import CompanionAgent
-from . import policy
-from .store import EventSuppressedError, Store, uid
+from . import life, policy
+from .model_admin import install_model_admin
+from .model_runtime import ModelRuntime
+from .store import EventSuppressedError, LastAdministratorError, Store, uid
 
 logger=logging.getLogger(__name__)
 
@@ -85,6 +87,12 @@ def zone_valid(value):
         ZoneInfo(value)
     except (ZoneInfoNotFoundError,ValueError):
         raise ValueError('请选择有效的 IANA 时区')
+    return value
+
+
+def personal_iso(value):
+    if value is not None and (not isinstance(value,str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}[Tt].*(?:[Zz]|[+-]\d{2}:\d{2})',value)):
+        raise ValueError('时间必须是包含 UTC 偏移的 ISO 字符串')
     return value
 
 
@@ -153,11 +161,66 @@ class EventInput(Payload):
 
 class MemoryInput(Payload):
     text:str=Field(min_length=1,max_length=2000)
-    category:Literal['preference','goal','fact','pattern']='preference'
+    category:Literal['preference','goal','fact','pattern','context','relationship','boundary']='preference'
+    expires_at:AwareDatetime|None=None
+
+    @field_validator('expires_at',mode='before')
+    @classmethod
+    def expiry_iso(cls,value):
+        return personal_iso(value)
 
 
 class MemoryEdit(Payload):
-    text:str=Field(min_length=1,max_length=2000)
+    text:str|None=Field(default=None,min_length=1,max_length=2000)
+    category:Literal['preference','goal','fact','pattern','context','relationship','boundary']|None=None
+    expires_at:AwareDatetime|None=None
+
+    @field_validator('expires_at',mode='before')
+    @classmethod
+    def expiry_iso(cls,value):
+        return personal_iso(value)
+
+    @model_validator(mode='after')
+    def known_values(self):
+        if not self.model_fields_set or any(key in self.model_fields_set and getattr(self,key) is None for key in ('text','category')):
+            raise ValueError('请选择要修改的记忆内容')
+        return self
+
+
+class ThreadInput(Payload):
+    title:str=Field(min_length=1,max_length=120)
+    details:str=Field(default='',max_length=2000)
+    status:Literal['active','paused','completed']='active'
+    event_at:AwareDatetime|None=None
+    follow_up_at:AwareDatetime|None=None
+    follow_up_enabled:StrictBool=False
+    outcome:str=Field(default='',max_length=2000)
+
+    @field_validator('event_at','follow_up_at',mode='before')
+    @classmethod
+    def dates_iso(cls,value):
+        return personal_iso(value)
+
+
+class ThreadEdit(Payload):
+    title:str|None=Field(default=None,min_length=1,max_length=120)
+    details:str|None=Field(default=None,max_length=2000)
+    status:Literal['active','paused','completed']|None=None
+    event_at:AwareDatetime|None=None
+    follow_up_at:AwareDatetime|None=None
+    follow_up_enabled:StrictBool|None=None
+    outcome:str|None=Field(default=None,max_length=2000)
+
+    @field_validator('event_at','follow_up_at',mode='before')
+    @classmethod
+    def dates_iso(cls,value):
+        return personal_iso(value)
+
+    @model_validator(mode='after')
+    def changed(self):
+        if not self.model_fields_set:
+            raise ValueError('请选择要修改的事情内容')
+        return self
 
 
 class ChatInput(Payload):
@@ -172,6 +235,14 @@ class PreferencesInput(Payload):
     daily_limit:int|None=Field(default=None,ge=0,le=10)
     reminder_categories:list[Literal['sleep','activity','meal']]|None=None
     timezone:str|None=None
+    support_style:Literal['listen','reflect','plan']|None=None
+    life_followups_enabled:StrictBool|None=None
+
+    @model_validator(mode='after')
+    def personal_values(self):
+        if any(key in self.model_fields_set and getattr(self,key) is None for key in ('support_style','life_followups_enabled')):
+            raise ValueError('陪伴方式和重要事情跟进开关不能留空')
+        return self
 
     @field_validator('timezone')
     @classmethod
@@ -225,7 +296,8 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
             raise RuntimeError('Application clock must be timezone-aware')
         return value.astimezone(timezone.utc)
 
-    agent=CompanionAgent()
+    runtime=ModelRuntime(store)
+    agent=CompanionAgent(model_runtime=runtime)
     upstream_locks={}
     def upstream_lock(user_id):
         if user_id not in upstream_locks:
@@ -240,6 +312,7 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
 
     def user_data(user):
         data=dict(user)
+        data['is_admin']=data.get('is_admin') is True
         data['timezone']=store.singleton('preferences',user['id']).get('timezone',user['timezone'])
         return data
 
@@ -262,7 +335,7 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
             # Mark before the request: partial external writes must still be erased on a later retry.
             prefs['_memory_index_used']=True
             store.singleton('preferences',user_id,prefs)
-            memory_adapter.sync(user_id,store.list('memories',user_id))
+            memory_adapter.sync(user_id,[m for m in store.list('memories',user_id) if life.active_memory(m,current_time())])
             return 'synced'
         except Exception:
             logger.warning('Semantic memory synchronization failed for a user')
@@ -275,9 +348,11 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
         with store.transaction():
             prefs=store.singleton('preferences',user_id)
             events=store.list('events',user_id)
-            memories=store.list('memories',user_id)
+            memories=[m for m in store.list('memories',user_id) if life.active_memory(m,now_value)]
+            threads=store.list('threads',user_id)
             result=agent.trends(events,now_value,prefs['timezone'],memories)
-            valid_ids={e['id'] for e in events}|{m['id'] for m in memories}
+            result['candidates']=life.candidates(threads,now_value)+result['candidates']
+            valid_ids={e['id'] for e in events}|{m['id'] for m in memories}|{t['id'] for t in threads}
             existing=store.list('reminders',user_id)
             for item in existing:
                 if item['status'] not in {'pending','snoozed'}:
@@ -286,8 +361,9 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
                     item['delivery_status']='inbox'
                     item['delivery_note']='上次发送中断，已恢复待发送；收件箱记录始终保留'
                     store.put('reminders',user_id,item)
-                matching=next((c for c in result['candidates'] if c['category']==item['category']),None)
-                if not prefs['enabled'] or item['category'] not in prefs['reminder_categories'] or not prefs['daily_limit']:
+                matching=next((c for c in result['candidates'] if c['category']==item['category'] and
+                    set(c['evidence_ids'])==set(item['evidence_ids']) and c.get('thread_revision')==item.get('thread_revision')),None)
+                if not prefs['enabled'] or not life.category_enabled(item['category'],prefs) or not prefs['daily_limit']:
                     item.update(status='cancelled',delivery_status='cancelled',cancel_reason='disabled')
                     store.put('reminders',user_id,item)
                 elif not matching or not set(item['evidence_ids'])<=valid_ids or set(item['evidence_ids'])!=set(matching['evidence_ids']):
@@ -298,9 +374,9 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
                     store.put('reminders',user_id,item)
                 elif item['status']=='snoozed' and policy.timestamp(item['scheduled_at'])<=now_value:
                     relevant=[e for e in events if e['id'] in item['evidence_ids']]
-                    if not set(item['evidence_ids'])<=valid_ids or not matching or not policy.has_fresh_evidence(relevant,now_value,36,prefs['timezone']):
+                    if not set(item['evidence_ids'])<=valid_ids or not matching or (item['category']!='life' and not policy.has_fresh_evidence(relevant,now_value,36,prefs['timezone'])):
                         item.update(status='cancelled',delivery_status='cancelled',cancel_reason='evidence_stale')
-                    elif not prefs['enabled'] or item['category'] not in prefs['reminder_categories']:
+                    elif not prefs['enabled'] or not life.category_enabled(item['category'],prefs):
                         item.update(status='cancelled',delivery_status='cancelled')
                     elif not policy.is_quiet(now_value,prefs):
                         day=now_value.astimezone(ZoneInfo(prefs['timezone'])).date().isoformat()
@@ -332,10 +408,10 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
             count=policy.daily_count(existing,now_value,prefs['timezone'])
             used={r['dedupe_key'] for r in existing}
             for candidate in result['candidates']:
-                if candidate['category'] not in prefs['reminder_categories']:
+                if not life.category_enabled(candidate['category'],prefs):
                     skipped.append('category_disabled')
                     continue
-                dedupe=policy.candidate_key(candidate,now_value,prefs['timezone'])
+                dedupe=candidate.get('dedupe_key') or policy.candidate_key(candidate,now_value,prefs['timezone'])
                 if dedupe in used:
                     skipped.append('already_evaluated')
                     continue
@@ -343,7 +419,7 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
                     skipped.append('daily_budget')
                     continue
                 item={'id':uid(),**candidate,'status':'pending','created_at':now_value.isoformat(),
-                      'scheduled_at':now_value.isoformat(),'expires_at':(now_value+timedelta(hours=24)).isoformat(),
+                      'scheduled_at':now_value.isoformat(),'expires_at':candidate.get('expires_at') or (now_value+timedelta(hours=24)).isoformat(),
                       'delivery_status':'inbox','dedupe_key':dedupe,'budget_date':now_value.astimezone(ZoneInfo(prefs['timezone'])).date().isoformat()}
                 store.put('reminders',user_id,item)
                 used.add(dedupe)
@@ -369,7 +445,7 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
         # Revalidate against the newest observations before any external delivery.
         await run_in_threadpool(evaluate_user,user)
         for item in store.list('reminders',user_id):
-            if item['status']!='pending' or item['delivery_status']!='inbox' or item['category'] not in prefs['reminder_categories']:
+            if item['status']!='pending' or item['delivery_status']!='inbox' or not life.category_enabled(item['category'],prefs):
                 continue
             if policy.timestamp(item['expires_at'])<=current_time():
                 continue
@@ -439,6 +515,7 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
         app.add_middleware(TrustedHostMiddleware,allowed_hosts=allowed_hosts,www_redirect=False)
     app.state.store=store
     app.state.agent=agent
+    app.state.model_runtime=runtime
     app.state.evaluate_user=evaluate_user
     app.state.deliver_user=deliver_user
     app.state.memory_adapter=memory_adapter
@@ -505,6 +582,8 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
         if user is None:
             raise HTTPException(401,'登录已过期，请重新登录')
         return user
+
+    install_model_admin(app,store,runtime,authenticated)
 
     def own(table,user,item_id):
         item=store.get(table,user['id'],item_id)
@@ -582,6 +661,8 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
 
     @app.delete('/api/me')
     async def delete_me(user=Depends(authenticated)):
+        if store.is_last_admin(user['id']):
+            raise HTTPException(409,'请先授权另一名管理员，再删除当前管理员账号')
         mapping=store.singleton('integrations',user['id'])
         if mapping.get('wearable_user_id') and not mapping.get('upstream_deleted'):
             client=upstream()
@@ -598,7 +679,10 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
                 await run_in_threadpool(memory_adapter.delete_user,user['id'])
             except Exception:
                 raise HTTPException(503,'外部记忆清理未完成，账号暂保留，请稍后重试')
-        store.delete_user(user['id'])
+        try:
+            store.delete_user(user['id'])
+        except LastAdministratorError as error:
+            raise HTTPException(409,str(error))
         return {'deleted':True}
 
     @app.get('/api/dashboard')
@@ -633,22 +717,26 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
 
     @app.get('/api/memories')
     def memories(user=Depends(authenticated)):
-        return {'items':store.list('memories',user['id'])}
+        return {'items':[life.memory_view(m,current_time()) for m in store.list('memories',user['id'])]}
 
     @app.post('/api/memories')
     def add_memory(data:MemoryInput,user=Depends(authenticated)):
-        item={'id':uid(),**data.model_dump(),'origin':'user','confidence':1.0,'evidence_ids':[],'created_at':current_time().isoformat()}
+        now_value=current_time()
+        values=data.model_dump(mode='json')
+        if data.category=='context' and 'expires_at' not in data.model_fields_set:
+            values['expires_at']=(now_value+timedelta(days=7)).isoformat()
+        item={'id':uid(),**values,'origin':'user','confidence':1.0,'evidence_ids':[],'created_at':now_value.isoformat()}
         store.put('memories',user['id'],item)
-        return {**item,'memory_sync':memory_sync(user['id'])}
+        return {**life.memory_view(item,now_value),'memory_sync':memory_sync(user['id'])}
 
     @app.patch('/api/memories/{item_id}')
     def edit_memory(item_id:str,data:MemoryEdit,user=Depends(authenticated)):
         item=own('memories',user,item_id)
         store.bump_context(user['id'])
         store.invalidate(user['id'],item_id)
-        item.update(text=data.text,origin='user',confidence=1.0,evidence_ids=[])
+        item.update(**data.model_dump(mode='json',exclude_unset=True),origin='user',confidence=1.0,evidence_ids=[])
         store.put('memories',user['id'],item)
-        return {**item,'memory_sync':memory_sync(user['id'])}
+        return {**life.memory_view(item,current_time()),'memory_sync':memory_sync(user['id'])}
 
     @app.delete('/api/memories/{item_id}')
     def delete_memory(item_id:str,user=Depends(authenticated)):
@@ -661,6 +749,49 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
         store.invalidate(user['id'],item_id)
         store.delete('memories',user['id'],item_id)
         return {'deleted':True,'memory_sync':memory_sync(user['id'])}
+
+    @app.get('/api/threads')
+    def threads(user=Depends(authenticated)):
+        return {'items':store.list('threads',user['id'])}
+
+    @app.post('/api/threads')
+    def add_thread(data:ThreadInput,user=Depends(authenticated)):
+        now_value=current_time()
+        try:
+            values=life.thread_values(data.model_dump(mode='json',exclude_unset=True),now_value)
+        except ValueError as error:
+            raise HTTPException(422,str(error))
+        with store.transaction():
+            if len(store.list('threads',user['id']))>=100:
+                raise HTTPException(409,'每个账号最多保存100件重要事情，请先整理旧记录')
+            item={'id':uid(),**values,'revision':1,'created_at':now_value.isoformat(),'updated_at':now_value.isoformat()}
+            store.put('threads',user['id'],item)
+            store.bump_context(user['id'])
+        return item
+
+    @app.patch('/api/threads/{item_id}')
+    def edit_thread(item_id:str,data:ThreadEdit,user=Depends(authenticated)):
+        with store.transaction():
+            item=own('threads',user,item_id)
+            try:
+                values=life.thread_values(data.model_dump(mode='json',exclude_unset=True),current_time(),item)
+            except ValueError as error:
+                raise HTTPException(422,str(error))
+            if all(item.get(key)==value for key,value in values.items()):
+                return item
+            values.update(revision=item['revision']+1,updated_at=current_time().isoformat())
+            store.invalidate(user['id'],item_id)
+            store.bump_context(user['id'])
+            return store.put('threads',user['id'],values)
+
+    @app.delete('/api/threads/{item_id}')
+    def delete_thread(item_id:str,user=Depends(authenticated)):
+        with store.transaction():
+            own('threads',user,item_id)
+            store.invalidate(user['id'],item_id)
+            store.bump_context(user['id'])
+            store.delete('threads',user['id'],item_id)
+        return {'deleted':True}
 
     @app.get('/api/chat')
     def chat_history(user=Depends(authenticated)):
@@ -676,7 +807,9 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
                 category='goal' if any(word in text for word in ['目标','希望','想要','计划']) else 'preference'
                 store.put('memories',user_id,{'id':uid(),'text':text,'category':category,'origin':'user',
                     'confidence':1.0,'evidence_ids':[],'created_at':current_time().isoformat()})
-        memories=store.list('memories',user_id)
+        now_value=current_time()
+        all_memories=store.list('memories',user_id)
+        memories=[m for m in all_memories if life.active_memory(m,now_value)]
         sync_status=memory_sync(user_id)
         if memory_adapter and memory_adapter.enabled and sync_status=='synced':
             try:
@@ -686,15 +819,17 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
                 memories=sorted(memories,key=lambda m:order.get(m['id'],100))
             except Exception:
                 sync_status='failed'
-        now_value=current_time()
         prefs=store.singleton('preferences',user_id)
         revision=prefs.get('_context_revision',0)
-        history=[message for message in store.list('chat',user_id) if message.get('context_revision',0)==revision]
+        history=life.history_after_expiry([message for message in store.list('chat',user_id) if message.get('context_revision',0)==revision],all_memories,now_value)
+        active_threads=[t for t in store.list('threads',user_id) if t['status']=='active'][-6:]
         result=agent.chat(store.list('events',user_id),memories,history,data.message,
-                          now_value,prefs['timezone'],allow_model=prefs.get('model_consent',False))
+                          now_value,prefs['timezone'],allow_model=prefs.get('model_consent',False),
+                          threads=active_threads,support_style=prefs.get('support_style','reflect'))
         for role,content in [('user',data.message),('assistant',result['reply'])]:
             store.put('chat',user_id,{'id':uid(),'role':role,'content':content,'created_at':now_value.isoformat(),'context_revision':revision})
-        return {'reply':result['reply'],'evidence':result['evidence'],'mode':result['mode'],'memory_sync':sync_status}
+        return {'reply':result['reply'],'evidence':result['evidence'],'mode':result['mode'],'memory_sync':sync_status,
+                'suggestions':life.suggestions(data.message,now_value)}
 
     @app.get('/api/preferences')
     def preferences(user=Depends(authenticated)):
@@ -735,7 +870,10 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
             raise HTTPException(409,'这条提醒已过期或依据发生变化，请重新评估')
         if data.action=='disable':
             prefs=store.singleton('preferences',user['id'])
-            prefs['reminder_categories']=[c for c in prefs['reminder_categories'] if c!=item['category']]
+            if item['category']=='life':
+                prefs['life_followups_enabled']=False
+            else:
+                prefs['reminder_categories']=[c for c in prefs['reminder_categories'] if c!=item['category']]
             store.singleton('preferences',user['id'],prefs)
             item.update(status='dismissed',delivery_status='dismissed')
         elif data.action=='snooze':
@@ -743,14 +881,17 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
         else:
             item.update(status='done' if data.action=='done' else 'dismissed',delivery_status='acknowledged')
         item['feedback_at']=now_value.isoformat()
-        return store.put('reminders',user['id'],item)
+        store.put('reminders',user['id'],item)
+        if data.action=='disable':
+            evaluate_user(user)
+        return item
 
     @app.get('/api/integrations/status')
     def integration_status(user=Depends(authenticated)):
         mapping=store.singleton('integrations',user['id'])
         return {'open_wearables':{'configured':bool(os.getenv('OPEN_WEARABLES_API_KEY') and (os.getenv('OPEN_WEARABLES_BASE_URL') or os.getenv('OPEN_WEARABLES_URL'))) or wearables_client is not None,
                 'connected':bool(mapping.get('wearable_user_id') and not mapping.get('upstream_deleted')),'last_sync_at':mapping.get('last_sync_at')},
-                'model':{'configured':agent.model_configured,'consented':store.singleton('preferences',user['id']).get('model_consent',False)},
+                'model':{**runtime.status(),'consented':store.singleton('preferences',user['id']).get('model_consent',False)},
                 'push':{'configured':bool(os.getenv('GOOGLE_APPLICATION_CREDENTIALS') or os.getenv('FCM_SERVICE_ACCOUNT_FILE'))},
                 'memory':{'configured':bool(memory_adapter and memory_adapter.enabled)}}
 

@@ -21,6 +21,13 @@ def encode(value):
     return json.dumps(value, ensure_ascii=False, separators=(',', ':'))
 
 
+ADMIN_PREDICATE="COALESCE(json_type(data,'$.is_admin'),'null')='true' AND COALESCE(json_extract(data,'$.is_demo'),0)=0"
+
+
+class LastAdministratorError(ValueError):
+    """The service must retain an account capable of managing model settings."""
+
+
 class EventSuppressedError(ValueError):
     """A user-deleted source record must not be recreated by an automatic sync."""
 
@@ -54,6 +61,8 @@ class Store:
                     id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, data TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS chat (
                     id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, data TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS threads (
+                    id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, data TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS preferences (
                     user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, data TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS reminders (
@@ -70,6 +79,7 @@ class Store:
                 CREATE INDEX IF NOT EXISTS events_user ON events(user_id);
                 CREATE INDEX IF NOT EXISTS memory_user ON memories(user_id);
                 CREATE INDEX IF NOT EXISTS chat_user ON chat(user_id);
+                CREATE INDEX IF NOT EXISTS threads_user ON threads(user_id);
                 CREATE INDEX IF NOT EXISTS reminder_user ON reminders(user_id);
             ''')
 
@@ -95,7 +105,8 @@ class Store:
             self.connection.execute('INSERT INTO users VALUES (?,?,?,?,?)',
                                     (user['id'],user['email'],hashed,salt,encode(user)))
             prefs = {'enabled':True, 'quiet_start':'22:00', 'quiet_end':'08:00', 'daily_limit':2,
-                     'reminder_categories':['sleep','activity','meal'], 'timezone':timezone_name,'model_consent':False}
+                     'reminder_categories':['sleep','activity','meal'], 'timezone':timezone_name,'model_consent':False,
+                     'support_style':'reflect','life_followups_enabled':True}
             self.connection.execute('INSERT INTO preferences VALUES (?,?)',(user['id'],encode(prefs)))
         return user
 
@@ -136,22 +147,28 @@ class Store:
 
     def delete_user(self, user_id):
         with self.transaction():
-            self.connection.execute('DELETE FROM users WHERE id=?',(user_id,))
+            result=self.connection.execute(f'DELETE FROM users WHERE id=? AND (NOT ({ADMIN_PREDICATE}) OR (SELECT count(*) FROM users WHERE {ADMIN_PREDICATE})>1)',(user_id,))
+            if not result.rowcount and self.connection.execute('SELECT 1 FROM users WHERE id=?',(user_id,)).fetchone():
+                raise LastAdministratorError('请先授权另一名管理员，再删除当前管理员账号')
+
+    def is_last_admin(self,user_id):
+        with self.lock:
+            return self.connection.execute(f'SELECT 1 FROM users WHERE id=? AND ({ADMIN_PREDICATE}) AND (SELECT count(*) FROM users WHERE {ADMIN_PREDICATE})<=1',(user_id,)).fetchone() is not None
 
     def list(self, table, user_id):
-        assert table in {'events','memories','chat','reminders','devices'}
+        assert table in {'events','memories','chat','reminders','devices','threads'}
         with self.lock:
             rows = self.connection.execute(f'SELECT data FROM {table} WHERE user_id=? ORDER BY rowid',(user_id,)).fetchall()
         return [json.loads(r[0]) for r in rows]
 
     def get(self, table, user_id, item_id):
-        assert table in {'events','memories','chat','reminders','devices'}
+        assert table in {'events','memories','chat','reminders','devices','threads'}
         with self.lock:
             row = self.connection.execute(f'SELECT data FROM {table} WHERE id=? AND user_id=?',(item_id,user_id)).fetchone()
         return json.loads(row[0]) if row else None
 
     def put(self, table, user_id, item):
-        assert table in {'memories','chat','reminders'}
+        assert table in {'memories','chat','reminders','threads'}
         with self.transaction():
             if table == 'reminders':
                 self.connection.execute('INSERT INTO reminders VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data WHERE reminders.user_id=excluded.user_id',
@@ -162,7 +179,7 @@ class Store:
         return item
 
     def delete(self, table, user_id, item_id):
-        assert table in {'events','memories','reminders'}
+        assert table in {'events','memories','reminders','threads'}
         with self.transaction():
             return self.connection.execute(f'DELETE FROM {table} WHERE id=? AND user_id=?',(item_id,user_id)).rowcount > 0
 
@@ -174,7 +191,10 @@ class Store:
             return value
         with self.lock:
             row=self.connection.execute(f'SELECT data FROM {table} WHERE user_id=?',(user_id,)).fetchone()
-        return json.loads(row[0]) if row else {}
+        data=json.loads(row[0]) if row else {}
+        if table=='preferences' and data:
+            data={'support_style':'reflect','life_followups_enabled':True,**data}
+        return data
 
     def invalidate(self, user_id, event_id):
         """Delete machine claims and cancel undelivered advice derived from a changed fact."""
