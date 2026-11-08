@@ -2,6 +2,7 @@
 import {OWClient,IntegrationError,verifyOWWebhook,sendFCM} from './integrations.mjs';
 import {PersonalError,activeMemory,memoryView,memoryInput,threadInput,lifeChoices,sharingSuggestions,personalReply,relevantPersonalContext,avoidsPersonalTopic} from './life.mjs';
 import {getModelConfig,publicModelStatus,completeModel,handleModelAdmin} from './model-admin.mjs';
+import {handleDesktopUpdates} from './desktop-updates.mjs';
 const ASSETS = /*__ASSETS__*/ {};
 const DAY=86400000;
 const TABLES=new Set(['events','memories','chat','reminders','devices','threads']);
@@ -387,6 +388,7 @@ async function api(request,env){const now=nowOf(env),url=new URL(request.url),ro
 export default {
   async fetch(request,env,ctx){try{
     const url=new URL(request.url);
+    const update=await handleDesktopUpdates(request,env);if(update)return update;
     if(url.pathname.startsWith('/api/'))return await api(request,env);
     if(!['GET','HEAD'].includes(request.method))return json({detail:'方法不支持'},405);
     const key=url.pathname==='/'?'/index.html':url.pathname,asset=ASSETS[key];if(!asset)return new Response('Not found',{status:404});

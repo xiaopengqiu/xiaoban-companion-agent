@@ -10,7 +10,9 @@ Python 服务采用 **Open Wearables 0.11.0 数据服务 + 自研陪伴扩展 + 
 
 ### Windows 桌面版
 
-从 [v0.3.0 发布页](https://github.com/xiaopengqiu/xiaoban-companion-agent/releases/tag/v0.3.0) 下载 `Xiaoban-Windows-portable.zip`，解压后双击 `Xiaoban-Windows.exe`；无需预装 Python，使用系统 WebView2 Runtime。源码构建命令为 `./scripts/build-windows.ps1 -Install`，输出在 `desktop/dist/`，使用说明见 [desktop/README.md](desktop/README.md)。这是尚未商业代码签名的便携开发版。
+从 [v0.4.1 发布页](https://github.com/xiaopengqiu/xiaoban-companion-agent/releases/tag/v0.4.1) 下载 `Xiaoban-Windows-portable.zip`，解压后双击 `Xiaoban-Windows.exe`；无需预装 Python，使用系统 WebView2 Runtime。源码构建命令为 `./scripts/build-windows.ps1 -Install`，使用说明见 [desktop/README.md](desktop/README.md)。这是尚未商业代码签名的便携开发版。
+
+v0.4.1 起默认启动后后台检查更新，运行期间每六小时检查一次；新版本自动下载并校验签名，下次启动安装，也可以从“检查更新”选择立即重启更新。本地记录、账号与设置独立保存。v0.3 及更早版需要手动换成 v0.4.1 一次，此后使用内置更新。维护者发布流程见 [docs/desktop-updates.md](docs/desktop-updates.md)。
 
 窗口菜单“数据与账户”区分**本机数据（离线）**与**在线账户（云端）**：本机数据保存在 `%LOCALAPPDATA%\Xiaoban`，使用打包的 Python/LangGraph、本地规则与结构化记忆，不连接外部模型、Mem0、穿戴或推送服务。在线模式访问配置的 HTTPS 服务，可与 Web/手机登录同一个云端账号；两种数据域不自动上传、同步或合并。窗口关闭后，本机服务与调度任务也会停止。程序优先复用本机端口并使用持久 WebView profile，端口冲突换址时需重新登录。
 

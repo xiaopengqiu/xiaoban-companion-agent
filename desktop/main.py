@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import time
 
 from desktop.runtime import LocalServer, Settings, SingleInstance, data_directory, validate_url
@@ -20,6 +21,15 @@ def self_test(report: Path) -> None:
     with tempfile.TemporaryDirectory(prefix='xiaoban-frozen-smoke-') as directory:
         service = LocalServer(Path(directory))
         try:
+            from desktop.update_ui import load_update_config
+            from desktop.updater import UpdateManager
+            config = load_update_config()
+            # Constructor validation is local-only. Never start its scheduler,
+            # check public metadata, or consume a pending package in self-test.
+            validation = UpdateManager(config, Path(directory) / 'update-validation')
+            assert validation.status()['current_version'] == config['version']
+            result.update(update_version=config['version'], public_updates_disabled=True)
+            result['checks'].append('bundled-signed-update-config')
             url = service.start()
             result['port'] = service.port
             with httpx.Client(base_url=url, trust_env=False, timeout=20) as client:
@@ -109,20 +119,49 @@ def main() -> int:
     parser.add_argument('--data-dir', type=Path)
     parser.add_argument('--ui-smoke', action='store_true')
     parser.add_argument('--reuse-login', action='store_true')
+    parser.add_argument('--apply-update', type=Path)
+    parser.add_argument('--skip-update-once', action='store_true')
+    parser.add_argument('--update-ack', type=Path)
+    parser.add_argument('--update-ack-token')
     args = parser.parse_args()
-    directory = args.data_dir or (Path(tempfile.mkdtemp(prefix='xiaoban-ui-smoke-')) if args.ui_smoke else data_directory())
+    # A copied, trusted current EXE runs the helper. Never initialize the app or
+    # acquire its mutex here, and never treat a source Python interpreter as an EXE.
+    if args.apply_update:
+        if not getattr(sys, 'frozen', False):
+            return 1
+        from desktop.update_apply import apply_update_request
+        return apply_update_request(args.apply_update)
+    if bool(args.update_ack) != bool(args.update_ack_token):
+        parser.error('--update-ack and --update-ack-token must be supplied together')
+    directory = args.data_dir or (Path(tempfile.mkdtemp(prefix='xiaoban-acceptance-'))
+                                 if args.ui_smoke or args.self_test else data_directory())
     directory.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(filename=directory / 'desktop.log', encoding='utf-8', level=logging.WARNING,
                         format='%(asctime)s %(levelname)s %(message)s')
     if args.self_test:
         self_test(args.report or directory / 'self-test.json')
         return 0
+    from desktop.update_ui import (UnavailableUpdates, UpdateWindowController, acknowledge_startup,
+                                   create_update_manager, load_update_config)
+    if args.ui_smoke:
+        # Exercise the real update child UI, with no public update requests or
+        # pending executable replacement during packaging/health acceptance.
+        manager = UnavailableUpdates('自检模式，不检查网络更新。', load_update_config()['version'])
+    else:
+        manager = create_update_manager(directory)
     instance = SingleInstance(directory)
     if not instance.acquire():
+        manager.stop()
+        instance.close()
         if sys.platform == 'win32':
             import ctypes
             ctypes.windll.user32.MessageBoxW(None, '小伴已在运行，请切回现有窗口继续使用。', '小伴', 0x40)
         return 0
+    if not args.ui_smoke and getattr(sys, 'frozen', False) and not args.skip_update_once and manager.has_pending():
+        if manager.launch_pending():
+            manager.stop()
+            instance.close()
+            return 0
     # Some dependencies assume stdout/stderr exist, including a windowed EXE.
     if sys.stdout is None:
         sys.stdout = open(os.devnull, 'w')
@@ -132,12 +171,28 @@ def main() -> int:
     from webview.menu import Menu, MenuAction
     service = LocalServer(directory)
     window = None
+    update_window = None
+    shutdown_lock = threading.RLock()
+    stopped = False
+
+    def shutdown():
+        nonlocal stopped
+        with shutdown_lock:
+            if stopped:
+                return
+            stopped = True
+            manager.stop()
+            if update_window is not None:
+                update_window.close()
+            service.stop()
+
     ui_result = {'status': 'failed', 'frozen': bool(getattr(sys, 'frozen', False))}
     try:
         local_url = service.start()
         ui_result['port'] = service.port
         window = webview.create_window('小伴 · 本机数据（离线）', local_url, width=1180, height=830,
                                        min_size=(880, 640), background_color='#F8F6EF')
+        update_window = UpdateWindowController(webview, manager, window.destroy)
 
         def local():
             window.set_title('小伴 · 本机数据（离线）')
@@ -156,14 +211,16 @@ def main() -> int:
             window.load_url(f'{local_url}/desktop/settings?key={service.settings_key}')
 
         menu = [Menu('数据与账户', [MenuAction('本机数据（离线）', local), MenuAction('在线账户（云端）', online),
-                                MenuAction('在线地址 / 设备说明', configure)]), Menu('窗口', [MenuAction('退出小伴', window.destroy)])]
-        window.events.closed += service.stop
+                                MenuAction('在线地址 / 设备说明', configure)]),
+                Menu('窗口', [MenuAction('检查更新', update_window.show), MenuAction('退出小伴', window.destroy)])]
+        window.events.closed += shutdown
         def ui_check():
-            def wait_js(script, timeout=30):
+            def wait_js(script, timeout=30, target=None):
+                target = target or window
                 deadline = time.monotonic() + timeout
                 while time.monotonic() < deadline:
                     try:
-                        if window.evaluate_js(script):
+                        if target.evaluate_js(script):
                             return
                     except Exception:
                         pass
@@ -181,13 +238,34 @@ def main() -> int:
                 wait_js("document.body.innerText.includes('在线账户与本机数据')")
                 local()
                 wait_js("document.body.innerText.includes('小林 · 合成数据')")
-                ui_result.update(status='passed', gui='WebView2', checks=['login', 'demo-dashboard', 'settings-menu', 'return-local-login-preserved'])
+                # Opening the updater must not navigate the chat or expose its API there.
+                wait_js("!window.pywebview || typeof window.pywebview.api.restart === 'undefined'")
+                child = update_window.show()
+                wait_js("document.querySelector('#current').textContent.startsWith('v')", target=child)
+                wait_js("document.body.innerText.includes('自检模式，不检查网络更新。')", target=child)
+                wait_js("document.body.innerText.includes('小林 · 合成数据')")
+                child.destroy()
+                ui_result.update(status='passed', gui='WebView2', update_version=load_update_config()['version'],
+                                 checks=['login', 'demo-dashboard', 'settings-menu', 'return-local-login-preserved',
+                                         'separate-update-window', 'main-window-has-no-native-update-api',
+                                         'smoke-public-updates-disabled'])
             except Exception as error:
                 ui_result['error_type'] = type(error).__name__
             finally:
                 window.destroy()
 
-        webview.start(func=ui_check if args.ui_smoke else None, gui='edgechromium', menu=menu, debug=False, private_mode=False,
+        def after_gui_ready():
+            if args.ui_smoke:
+                ui_check()
+            elif window.events.loaded.wait(timeout=30):
+                with shutdown_lock:
+                    if not stopped:
+                        if args.update_ack:
+                            acknowledge_startup(directory, args.update_ack, args.update_ack_token,
+                                                load_update_config()['version'])
+                        manager.start()
+
+        webview.start(func=after_gui_ready, gui='edgechromium', menu=menu, debug=False, private_mode=False,
                       storage_path=str(directory / 'webview'))
         if args.ui_smoke:
             return 0 if ui_result['status'] == 'passed' else 1
@@ -199,7 +277,7 @@ def main() -> int:
             ctypes.windll.user32.MessageBoxW(None, '小伴未能启动。请确认 Microsoft Edge WebView2 Runtime 已安装。\n诊断日志：' + str(directory / 'desktop.log'), '小伴', 0x10)
         return 1
     finally:
-        service.stop()
+        shutdown()
         instance.close()
         if args.ui_smoke:
             ui_result['server_stopped'] = not service.running
