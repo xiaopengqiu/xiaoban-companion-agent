@@ -248,3 +248,122 @@ def test_changing_prepared_file_never_reaches_github(built):
         stream.write(b"changed")
     with pytest.raises(ReleaseError, match="Prepared release files changed"):
         publish_bundle(bundle, "owner/repo", runner=lambda *args, **kwargs: pytest.fail("Changed file reached GitHub"))
+
+
+class DraftGitHub:
+    """CLI boundary: REST by-tag misses a draft, paginated list can see it."""
+    def __init__(self, bundle, *, by_tag_code=1):
+        self.bundle = bundle
+        self.commands = []
+        self.by_tag_code = by_tag_code
+        self.release = {"id": 438362194, "tag_name": "v" + bundle.version,
+                        "draft": True, "assets": []}
+        self.pages = [[{"id": 10, "tag_name": "v" + bundle.version + "0",
+                        "draft": False, "assets": []}], [self.release]]
+        self.omit_after_upload = None
+
+    def __call__(self, argv, **kwargs):
+        self.commands.append(argv)
+        if argv[1] == "api":
+            endpoint = argv[2]
+            if "/releases/tags/" in endpoint:
+                return subprocess.CompletedProcess(argv, self.by_tag_code,
+                    json.dumps({"message": "Not Found", "status": "404"}),
+                    "gh: Not Found (HTTP 404)" if self.by_tag_code else "")
+            if endpoint == "repos/owner/repo/releases?per_page=100":
+                assert "--paginate" in argv and "--slurp" in argv
+                return subprocess.CompletedProcess(argv, 0, json.dumps(self.pages), "")
+            if "/commits/" in endpoint:
+                return subprocess.CompletedProcess(argv, 0, json.dumps({"sha": "b" * 40}), "")
+            pytest.fail("Unexpected API endpoint: " + endpoint)
+        assert argv[:4] == ["gh", "release", "upload", "v" + self.bundle.version]
+        assert "--clobber" not in argv
+        for path in self.bundle.assets:
+            if str(path) in argv and path.name != self.omit_after_upload:
+                self.release["assets"].append(remote_asset(path))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    @property
+    def uploads(self):
+        return [argv for argv in self.commands if argv[1] == "release"]
+
+
+@pytest.mark.parametrize("by_tag_code", [1, 0])
+def test_draft_release_fallback_uploads_only_missing_assets_from_exact_paginated_tag(built, by_tag_code):
+    bundle = prepare(built)
+    remote = DraftGitHub(bundle, by_tag_code=by_tag_code)
+    remote.release["assets"] = [remote_asset(path) for path in bundle.assets[:2]]
+    sources = []
+    result = publish_bundle(bundle, "owner/repo", runner=remote,
+        source_validator=lambda bundle, revision: sources.append(revision))
+    assert sources == ["b" * 40]
+    assert result["uploaded"] == [path.name for path in bundle.assets[2:]]
+    assert len(remote.uploads) == 1
+    assert all(str(path) not in remote.uploads[0] for path in bundle.assets[:2])
+    assert len([argv for argv in remote.commands if "--slurp" in argv]) == 2
+
+
+def test_draft_fallback_preserves_immutable_asset_gate_before_any_upload(built):
+    bundle = prepare(built)
+    remote = DraftGitHub(bundle)
+    remote.release["assets"] = [remote_asset(bundle.assets[0], digest="sha256:" + "0" * 64)]
+    with pytest.raises(ReleaseError, match="immutable"):
+        publish_bundle(bundle, "owner/repo", runner=remote, source_validator=source_check)
+    assert remote.uploads == []
+    assert not any("/commits/" in argv[2] for argv in remote.commands)
+
+
+@pytest.mark.parametrize("pages", [
+    [], [[{"id": 1, "tag_name": "v0.4.10", "assets": []}]],
+    [[{"id": 1, "tag_name": "v0.4.1", "assets": []}],
+     [{"id": 2, "tag_name": "v0.4.1", "assets": []}]],
+    [{"id": 1, "tag_name": "v0.4.1", "assets": []}],
+    [[{"id": 1, "tag_name": "v0.4.1", "assets": "invalid"}]],
+])
+def test_draft_fallback_rejects_missing_ambiguous_or_malformed_release_metadata(built, pages):
+    bundle = prepare(built)
+    remote = DraftGitHub(bundle)
+    remote.pages = pages
+    with pytest.raises(ReleaseError, match="metadata|target release"):
+        publish_bundle(bundle, "owner/repo", runner=remote, source_validator=source_check)
+    assert remote.uploads == []
+
+
+@pytest.mark.parametrize("status", [401, 403, 500])
+def test_other_github_failures_do_not_fall_back_or_upload(built, status):
+    bundle = prepare(built)
+    calls = []
+    def gh(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 1, json.dumps({"status": str(status)}),
+            f"gh: request failed (HTTP {status})")
+    with pytest.raises(ReleaseError):
+        publish_bundle(bundle, "owner/repo", runner=gh, source_validator=source_check)
+    assert len(calls) == 1
+
+
+def test_draft_fallback_still_verifies_source_before_upload(built):
+    bundle = prepare(built)
+    remote = DraftGitHub(bundle)
+    def reject(bundle, revision):
+        raise ReleaseError("Android production inputs differ from target tag")
+    with pytest.raises(ReleaseError, match="target tag"):
+        publish_bundle(bundle, "owner/repo", runner=remote, source_validator=reject)
+    assert remote.uploads == []
+
+
+def test_draft_fallback_rechecks_remote_digests_and_incomplete_upload(built):
+    bundle = prepare(built)
+    remote = DraftGitHub(bundle)
+    remote.omit_after_upload = bundle.assets[-1].name
+    with pytest.raises(ReleaseError, match="incomplete"):
+        publish_bundle(bundle, "owner/repo", runner=remote, source_validator=source_check)
+    assert len(remote.uploads) == 1
+
+
+def test_draft_exact_retry_is_read_only_and_still_checks_source(built):
+    bundle = prepare(built)
+    remote = DraftGitHub(bundle)
+    remote.release["assets"] = [remote_asset(path) for path in bundle.assets]
+    result = publish_bundle(bundle, "owner/repo", runner=remote, source_validator=source_check)
+    assert result["uploaded"] == [] and remote.uploads == []

@@ -230,18 +230,45 @@ def publish_bundle(bundle: ReleaseBundle, repository: str, *, runner=subprocess.
         if any(digest(regular(p)) != bundle.hashes[p.name] for p in bundle.assets):
             raise ReleaseError("Prepared release files changed; run validation again")
 
-    def gh(arguments):
+    def gh(arguments, *, allow_not_found=False):
         try:
             result = runner(["gh", *arguments], capture_output=True, text=True, encoding="utf-8", timeout=900)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise ReleaseError("GitHub CLI unavailable or timed out; inspect release before retrying") from exc
         if result.returncode:
+            if allow_not_found:
+                try:
+                    error = json.loads(result.stdout)
+                except (ValueError, TypeError):
+                    error = None
+                if ((isinstance(error, dict) and str(error.get("status")) == "404")
+                        or re.search(r"\bHTTP\s+404\b", result.stderr or "")):
+                    return None
             raise ReleaseError("GitHub CLI failed; check repository, existing release and gh authentication")
         return result.stdout
 
     def remote():
         try:
-            release = json.loads(gh(["api", f"repos/{repository}/releases/tags/v{bundle.version}"]))
+            tag = f"v{bundle.version}"
+            raw = gh(["api", f"repos/{repository}/releases/tags/{tag}"], allow_not_found=True)
+            release = None if raw is None else json.loads(raw)
+            # Drafts can be visible in the authenticated list while the by-tag
+            # endpoint returns 404. Never guess from a partial or first-page list.
+            if release is None or (isinstance(release, dict) and "assets" not in release
+                    and str(release.get("status")) == "404"):
+                pages = json.loads(gh(["api", f"repos/{repository}/releases?per_page=100",
+                                      "--paginate", "--slurp"]))
+                if (not isinstance(pages, list) or any(not isinstance(page, list) for page in pages)
+                        or any(not isinstance(item, dict) for page in pages for item in page)):
+                    raise ValueError()
+                matches = [item for page in pages for item in page if item.get("tag_name") == tag]
+                if len(matches) != 1:
+                    raise ReleaseError("GitHub target release was not found uniquely")
+                release = matches[0]
+                if type(release.get("id")) is not int or release["id"] <= 0:
+                    raise ValueError()
+            if not isinstance(release, dict) or release.get("tag_name", tag) != tag:
+                raise ValueError()
             assets = release["assets"]
             if not isinstance(assets, list):
                 raise ValueError()
@@ -249,6 +276,8 @@ def publish_bundle(bundle: ReleaseBundle, repository: str, *, runner=subprocess.
             if len(indexed) != len(assets):
                 raise ValueError()
             return indexed
+        except ReleaseError:
+            raise
         except (ValueError, KeyError, TypeError) as exc:
             raise ReleaseError("GitHub release metadata is invalid") from exc
 
