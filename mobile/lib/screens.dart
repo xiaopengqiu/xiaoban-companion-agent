@@ -1,7 +1,9 @@
 import 'dart:convert';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'app_state.dart';
 import 'services.dart';
+import 'care_screens.dart';
 
 typedef Perform =
     Future<bool> Function(Future<void> Function() action, {String? message});
@@ -96,20 +98,60 @@ class CompanionShell extends StatefulWidget {
   State<CompanionShell> createState() => _CompanionShellState();
 }
 
-class _CompanionShellState extends State<CompanionShell> {
+class _CompanionShellState extends State<CompanionShell>
+    with WidgetsBindingObserver {
   int index = 0;
   bool working = false;
+  Timer? carePoll;
+  bool appActive = true;
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    carePoll = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted && appActive) widget.state.care.refresh();
+    });
     Future.microtask(() async {
       await widget.state.refresh();
+      await widget.state.care.refresh();
       if (!mounted) {
         return;
       }
-      await widget.push.restore(widget.state.api, widget.state.refresh);
+      await widget.push.restore(
+        widget.state.api,
+        refreshMessages,
+        onOpenCare: openCare,
+      );
       if (mounted) setState(() {});
     });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState value) {
+    appActive = value == AppLifecycleState.resumed;
+    if (appActive) widget.state.care.refresh();
+  }
+
+  @override
+  void dispose() {
+    carePoll?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  void refreshMessages() {
+    if (!mounted) return;
+    unawaited(widget.state.refresh());
+    unawaited(widget.state.care.refresh());
+  }
+
+  void openCare(String id) {
+    if (!mounted) return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => CareConversationPage(care: widget.state.care, id: id),
+      ),
+    );
   }
 
   Future<bool> perform(
@@ -147,9 +189,28 @@ class _CompanionShellState extends State<CompanionShell> {
       MaterialPageRoute<void>(
         builder: (_) => AnimatedBuilder(
           animation: widget.state,
-          builder: (_, __) => Scaffold(
-            appBar: AppBar(title: const Text('陪伴收件箱')),
-            body: ReminderPage(state: widget.state, perform: perform),
+          builder: (_, __) => DefaultTabController(
+            length: 2,
+            child: Scaffold(
+              appBar: AppBar(
+                title: const Text('陪伴收件箱'),
+                bottom: const TabBar(
+                  tabs: [
+                    Tab(text: '主动关心'),
+                    Tab(text: '生活提醒'),
+                  ],
+                ),
+              ),
+              body: TabBarView(
+                children: [
+                  CareInboxPage(
+                    care: widget.state.care,
+                    afterPreferenceChange: widget.state.refresh,
+                  ),
+                  ReminderPage(state: widget.state, perform: perform),
+                ],
+              ),
+            ),
           ),
         ),
       ),
@@ -172,6 +233,7 @@ class _CompanionShellState extends State<CompanionShell> {
           push: widget.push,
           perform: perform,
           onLogout: widget.onLogout,
+          onOpenCare: openCare,
         ),
       ];
       return Scaffold(
@@ -194,7 +256,11 @@ class _CompanionShellState extends State<CompanionShell> {
             IconButton(
               tooltip: '陪伴收件箱',
               onPressed: inbox,
-              icon: const Icon(Icons.notifications_none_rounded),
+              icon: Badge(
+                isLabelVisible: state.care.unreadCount > 0,
+                label: Text('${state.care.unreadCount}'),
+                child: const Icon(Icons.notifications_none_rounded),
+              ),
             ),
             const SizedBox(width: 8),
           ],
@@ -1412,12 +1478,14 @@ class SettingsPage extends StatelessWidget {
     required this.push,
     required this.perform,
     required this.onLogout,
+    this.onOpenCare,
   });
   final CompanionState state;
   final HealthSyncService health;
   final PushService push;
   final Perform perform;
   final Future<void> Function({bool deleteAccount}) onLogout;
+  final ValueChanged<String>? onOpenCare;
   @override
   Widget build(BuildContext context) {
     final wearable = (state.integrations['open_wearables'] as Map?) ?? {};
@@ -1428,6 +1496,20 @@ class SettingsPage extends StatelessWidget {
           subtitle:
               '${text(state.user['email'], '演示账号')} · ${state.user['is_demo'] == true ? '合成数据演示' : '个人账号'}',
         ),
+        if (state.user['is_admin'] == true && state.user['is_demo'] != true)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 14),
+            child: OutlinedButton.icon(
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute<void>(
+                  builder: (_) => CareAdminPage(state: state),
+                ),
+              ),
+              icon: const Icon(Icons.admin_panel_settings_outlined),
+              label: const Text('管理关心频率、模型与通知服务'),
+            ),
+          ),
         const SectionTitle('连接真实的日常'),
         Panel(
           child: Column(
@@ -1519,12 +1601,15 @@ class SettingsPage extends StatelessWidget {
               ),
               const SizedBox(height: 10),
               Text(push.status, style: const TextStyle(height: 1.7)),
+              const SizedBox(height: 8),
+              const Text('允许后会向已配置的通知服务注册本机推送标识，用于小伴主动关心。应用内收件箱无需开启系统通知。'),
               const SizedBox(height: 12),
               OutlinedButton.icon(
                 onPressed: () => perform(() async {
                   final message = await push.enable(state.api, () {
                     state.refresh();
-                  });
+                    state.care.refresh();
+                  }, onOpenCare: onOpenCare);
                   if (context.mounted) {
                     ScaffoldMessenger.of(
                       context,
@@ -1533,6 +1618,10 @@ class SettingsPage extends StatelessWidget {
                 }),
                 icon: const Icon(Icons.notifications_active_outlined),
                 label: const Text('开启系统推送'),
+              ),
+              TextButton(
+                onPressed: () => perform(push.disconnect, message: '本机系统推送已关闭'),
+                child: const Text('关闭本机系统推送'),
               ),
             ],
           ),

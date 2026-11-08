@@ -1,26 +1,14 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:open_wearables_health_sdk/open_wearables_health_sdk.dart';
 import 'package:open_wearables_health_sdk/health_data_type.dart';
 import 'api.dart';
-
-class SessionStore {
-  const SessionStore();
-  static const _storage = FlutterSecureStorage(
-    aOptions: AndroidOptions(encryptedSharedPreferences: true),
-    iOptions: IOSOptions(
-      accessibility: KeychainAccessibility.first_unlock_this_device,
-    ),
-  );
-  Future<String?> read(String key) => _storage.read(key: 'companion_$key');
-  Future<void> write(String key, String value) =>
-      _storage.write(key: 'companion_$key', value: value);
-  Future<void> delete(String key) => _storage.delete(key: 'companion_$key');
-}
+import 'native_push.dart';
+import 'session_store.dart';
+export 'session_store.dart';
 
 class HealthSyncService {
   HealthSyncService(this.store);
@@ -107,6 +95,7 @@ class HealthSyncService {
 class PushService {
   PushService(this.store);
   final SessionStore store;
+  late final native = NativeCarePushService(store);
   static const enabledInBuild = bool.fromEnvironment(
     'ENABLE_PUSH',
     defaultValue: false,
@@ -114,16 +103,25 @@ class PushService {
   StreamSubscription<String>? _tokenUpdates;
   StreamSubscription<RemoteMessage>? _messages;
   bool _active = false;
-  String status = '提醒保存在应用收件箱；系统推送尚未开启';
+  String _status = '提醒保存在应用收件箱；系统推送尚未开启';
+  String get status => Platform.isAndroid ? native.status : _status;
 
-  Future<void> restore(CompanionApi api, VoidCallback onMessage) async {
+  Future<void> restore(
+    CompanionApi api,
+    VoidCallback onMessage, {
+    ValueChanged<String>? onOpenCare,
+  }) async {
+    if (Platform.isAndroid) {
+      await native.restore(api, onMessage, onOpenCare: onOpenCare);
+      return;
+    }
     if (!enabledInBuild || await store.read('push_registered') != 'true') {
       return;
     }
     try {
       await enable(api, onMessage, askPermission: false);
     } catch (e) {
-      status = '系统推送恢复失败：$e';
+      _status = '系统推送恢复失败：$e';
     }
   }
 
@@ -131,7 +129,16 @@ class PushService {
     CompanionApi api,
     VoidCallback onMessage, {
     bool askPermission = true,
+    ValueChanged<String>? onOpenCare,
   }) async {
+    if (Platform.isAndroid) {
+      return native.enable(
+        api,
+        onMessage,
+        askPermission: askPermission,
+        onOpenCare: onOpenCare,
+      );
+    }
     if (!enabledInBuild) {
       throw const ApiException(
         '此构建未配置系统推送。添加 Firebase 配置并用 ENABLE_PUSH=true 构建后可开启。',
@@ -174,7 +181,7 @@ class PushService {
       try {
         await register(token);
       } catch (_) {
-        status = '推送令牌更新失败，请重新开启推送';
+        _status = '推送令牌更新失败，请重新开启推送';
         onMessage();
       }
     });
@@ -186,11 +193,15 @@ class PushService {
       sound: true,
     );
     _active = true;
-    status = '设备已注册推送。实际送达取决于服务、系统权限和网络。';
+    _status = '设备已注册推送。实际送达取决于服务、系统权限和网络。';
     return status;
   }
 
   Future<void> disconnect() async {
+    if (Platform.isAndroid) {
+      await native.disconnect();
+      return;
+    }
     await _tokenUpdates?.cancel();
     await _messages?.cancel();
     // Invalidate any previous owner's native token on this shared device.
@@ -205,6 +216,6 @@ class PushService {
     }
     await store.delete('push_registered');
     _active = false;
-    status = '系统推送已断开';
+    _status = '系统推送已断开';
   }
 }

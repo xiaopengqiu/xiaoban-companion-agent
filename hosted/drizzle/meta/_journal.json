@@ -29,6 +29,20 @@
       "when": 1794128191480,
       "tag": "0003_companion",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1794150175134,
+      "tag": "0004_companion",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1794152490782,
+      "tag": "0005_proactive_care",
+      "breakpoints": true
     }
   ]
 }

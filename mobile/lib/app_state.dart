@@ -1,9 +1,17 @@
 import 'package:flutter/foundation.dart';
 import 'api.dart';
+import 'care_state.dart';
 
 class CompanionState extends ChangeNotifier {
-  CompanionState(this.api, this.user);
+  CompanionState(this.api, this.user) {
+    care.addListener(_careChanged);
+  }
   final CompanionApi api;
+  late final care = CareState(api);
+  void _careChanged() {
+    if (!_disposed) notifyListeners();
+  }
+
   Map<String, dynamic> user;
   Map<String, dynamic> dashboard = {}, preferences = {}, integrations = {};
   List<Map<String, dynamic>> events = [],
@@ -76,6 +84,8 @@ class CompanionState extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    care.removeListener(_careChanged);
+    care.dispose();
     api.close();
     super.dispose();
   }

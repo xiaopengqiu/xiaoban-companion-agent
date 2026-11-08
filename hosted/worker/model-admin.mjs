@@ -27,13 +27,14 @@ async function encrypt(env,c){const iv=crypto.getRandomValues(new Uint8Array(12)
 async function decrypt(env,text){try{const doc=JSON.parse(text);if(doc.version!==1)fail('模型设置版本无效');const raw=await crypto.subtle.decrypt({name:'AES-GCM',iv:unbase64(doc.iv),additionalData:encoder.encode('xiaoban-model-settings-v1')},await cryptoKey(env),unbase64(doc.data));return JSON.parse(new TextDecoder().decode(raw));}catch{fail('模型设置无法解密，请检查服务端加密密钥');}}
 export async function getModelConfig(env){const row=await env.DB.prepare("SELECT value FROM service_state WHERE state_key='model_settings'").first();const c=row?await decrypt(env,row.value):defaults(env);return {...c,configured:configured(c)};}
 async function boundedJson(request,limit=16000){const reader=request.body?.getReader();let chunks=[],size=0;try{if(reader)while(true){const r=await reader.read();if(r.done)break;size+=r.value.byteLength;if(size>limit){await reader.cancel();fail('请求内容过大');}chunks.push(r.value);}const raw=new Uint8Array(size);let offset=0;for(const c of chunks){raw.set(c,offset);offset+=c.length;}const text=new TextDecoder('utf-8',{fatal:true}).decode(raw);return text?JSON.parse(text):{};}catch(error){if(error instanceof ModelRuntimeError)throw error;fail('请输入有效 JSON 对象');}finally{reader?.releaseLock();}}
-export async function completeModel(env,messages){
+export async function completeModel(env,messages,options={}){
  const c=await getModelConfig(env);if(!c.configured)fail('模型服务尚未配置');
  const local=c.mode==='local',url=local?c.gateway_url:c.api_url,key=local?c.gateway_key:c.api_key;
  try{
   const target=new URL(url);if(target.protocol!=='https:')throw Error();
   const payload={model:local?c.local_provider:c.model,messages,max_tokens:700,temperature:.4};if(local&&c.local_model)payload.local_model=c.local_model;
-  const response=await fetch(url.replace(/\/$/,'')+'/chat/completions',{method:'POST',redirect:'manual',headers:{'Content-Type':'application/json',Authorization:'Bearer '+key},signal:AbortSignal.timeout(local?50000:20000),body:JSON.stringify(payload)});
+  const timeout=Number.isFinite(options.timeoutMs)?Math.max(1,Math.min(local?50000:20000,options.timeoutMs)):(local?50000:20000);
+  const response=await fetch(url.replace(/\/$/,'')+'/chat/completions',{method:'POST',redirect:'manual',headers:{'Content-Type':'application/json',Authorization:'Bearer '+key},signal:AbortSignal.timeout(timeout),body:JSON.stringify(payload)});
   if(!response.ok)throw Error();const result=await boundedJson(response,128000),text=result.choices?.[0]?.message?.content;
   if(typeof text!=='string'||!text.trim())throw Error();return text.trim().slice(0,6000);
  }catch{fail('模型服务暂时不可用，请检查管理员配置');}

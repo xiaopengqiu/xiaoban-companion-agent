@@ -4,6 +4,7 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import {SessionGuard,ReminderTracker} from '../web/lifecycle.mjs';
 import {memoryGroups, threadPayload, dueThreads, DueCheckGate, localInput, modelConfigPayload} from '../web/companion-ui.mjs';
+import * as careUI from '../web/care-ui.mjs';
 
 test('expired personal context stays editable but is separated from current understanding',()=>{
   const groups=memoryGroups([{id:'a',category:'preference'},{id:'b',category:'context',is_active:true},{id:'c',category:'context',is_active:false},{id:'d',category:'boundary'},{id:'e',category:'pattern'}]);
@@ -61,7 +62,7 @@ test('local CLI model selection stays separate from the API model',()=>{
 
 test('ordinary users never fetch admin resources; admin user lists clear when role changes',async()=>{
   const calls=[],elements=new Map();let isAdmin=false;
-  const context={document:{querySelector(selector){if(selector.startsWith('meta'))return null;if(!elements.has(selector))elements.set(selector,{});return elements.get(selector);}},localStorage:{getItem:()=> 'test-session'},SessionGuard,ReminderTracker,DueCheckGate,AbortController,setTimeout,clearTimeout,
+  const context={...careUI,document:{querySelector(selector){if(selector.startsWith('meta'))return null;if(!elements.has(selector))elements.set(selector,{});return elements.get(selector);}},localStorage:{getItem:()=> 'test-session'},SessionGuard,ReminderTracker,DueCheckGate,AbortController,setTimeout,clearTimeout,
     fetch:async path=>{calls.push(path);const data=path==='/api/dashboard'?{user:{is_admin:isAdmin}}:path==='/api/admin/users'?{items:[{id:'owner',name:'Owner',email:'owner@example.com',is_admin:true},{id:'demo',name:'Demo',email:'demo@example.com',is_demo:true,is_admin:false}]}:path==='/api/preferences'?{}:path==='/api/integrations/status'?{}:{items:[]};return {ok:true,status:200,json:async()=>data};}};
   vm.createContext(context);
   const source=readFileSync(new URL('../web/app.js',import.meta.url),'utf8').replace(/^import .*;$/gm,'').split('setInterval(checkNewMessages')[0];

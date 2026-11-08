@@ -5,6 +5,7 @@ import {existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {Miniflare} from 'miniflare';
+import {workerSource} from './fixtures/worker-source.mjs';
 
 let mf,db;
 const NOW='2026-11-08T06:00:00.000Z';
@@ -26,7 +27,7 @@ async function event(token,overrides={}){
 }
 before(async()=>{
   assert.ok(existsSync('worker/index.js'),'Hosted Worker API must be implemented');
-  mf=new Miniflare({modules:true,scriptPath:'worker/index.js',compatibilityDate:'2026-07-30',
+  mf=new Miniflare({modules:true,script:await workerSource(),compatibilityDate:'2026-07-30',
     d1Databases:['DB'],bindings:{TEST_NOW:NOW,ENVIRONMENT:'test',AUTH_PEPPER:'test-only-32-character-server-pepper',CRON_SECRET:'test-only-protected-cron-secret-32chars',AUTH_RATE_LIMIT:'1000',SCHEDULER_BATCH_SIZE:'30'}});
   db=await mf.getD1Database('DB');
   await migrate(db);
@@ -150,7 +151,7 @@ test('server-authenticated cron performs evaluation without a browser session',a
 
 test('D1 data and hashed session survive a complete Worker restart',async()=>{
   const persist=await mkdtemp(path.join(tmpdir(),'companion-d1-'));
-  const options={modules:true,scriptPath:'worker/index.js',compatibilityDate:'2026-07-30',d1Databases:{DB:'persistent-companion'},d1Persist:persist,
+  const options={modules:true,script:await workerSource(),compatibilityDate:'2026-07-30',d1Databases:{DB:'persistent-companion'},d1Persist:persist,
     bindings:{ENVIRONMENT:'test',TEST_NOW:NOW,AUTH_PEPPER:'test-only-32-character-server-pepper'}};
   let instance=new Miniflare(options),local=await instance.getD1Database('DB');
   await migrate(local);
@@ -163,7 +164,7 @@ test('D1 data and hashed session survive a complete Worker restart',async()=>{
 });
 
 test('missing pepper fails closed and auth rate limit ignores forged forwarding headers',async()=>{
-  const local=new Miniflare({modules:true,scriptPath:'worker/index.js',compatibilityDate:'2026-07-30',d1Databases:['DB'],bindings:{AUTH_RATE_LIMIT:'1'}});
+  const local=new Miniflare({modules:true,script:await workerSource(),compatibilityDate:'2026-07-30',d1Databases:['DB'],bindings:{AUTH_RATE_LIMIT:'1'}});
   try{const database=await local.getD1Database('DB');await migrate(database);
     let response=await local.dispatchFetch('http://localhost/api/auth/register',{method:'POST',headers:{'Content-Type':'application/json','CF-Connecting-IP':'192.0.2.1','X-Forwarded-For':'fake-one'},body:JSON.stringify({name:'x',email:'nopepper@example.com',password:'a-secret-password',consent_health_data:true})});
     assert.equal(response.status,503);assert.ok(!(await response.text()).includes('a-secret-password'));
@@ -216,7 +217,7 @@ test('configured wearable binding, signed sync, suppression and remote erasure u
   const uuid='11111111-1111-4111-8111-111111111111',source={provider:'apple',source:'HealthKit',device:'Apple Watch'};
   const secretBytes=new Uint8Array(32).fill(4),secret='whsec_'+btoa(String.fromCharCode(...secretBytes));
   let profiles=0,syncs=0,deleteFails=true;
-  const instance=new Miniflare({modules:true,scriptPath:'worker/index.js',compatibilityDate:'2026-07-30',d1Databases:['DB'],
+  const instance=new Miniflare({modules:true,script:await workerSource(),compatibilityDate:'2026-07-30',d1Databases:['DB'],
     bindings:{ENVIRONMENT:'test',TEST_NOW:NOW,AUTH_PEPPER:'test-only-32-character-server-pepper',OPEN_WEARABLES_URL:'https://wearable.fixture',OPEN_WEARABLES_API_KEY:'test-only-admin-key',OPEN_WEARABLES_APP_ID:'app',OPEN_WEARABLES_APP_SECRET:'test-only-app-secret',OPEN_WEARABLES_PUBLIC_URL:'https://phone.fixture',OPEN_WEARABLES_WEBHOOK_SECRET:secret},
     outboundService:async request=>{const url=new URL(request.url),reply=data=>new Response(JSON.stringify(data),{headers:{'content-type':'application/json'}});
       if(url.pathname==='/api/v1/users'&&request.method==='POST'){profiles++;return reply({id:uuid});}
@@ -261,7 +262,7 @@ test('edge deterministic metrics match the Python policy fixtures',async()=>{
 
 test('edge transports refuse 302 and 307 redirects without forwarding administrator credentials',async()=>{
   const destinations=[];let status=302;
-  const instance=new Miniflare({modules:true,scriptPath:'worker/index.js',compatibilityDate:'2026-07-30',d1Databases:['DB'],
+  const instance=new Miniflare({modules:true,script:await workerSource(),compatibilityDate:'2026-07-30',d1Databases:['DB'],
     bindings:{ENVIRONMENT:'test',TEST_NOW:NOW,AUTH_PEPPER:'test-only-32-character-server-pepper',OPEN_WEARABLES_URL:'https://wearable.fixture',OPEN_WEARABLES_API_KEY:'test-only-admin-key',OPEN_WEARABLES_APP_ID:'app',OPEN_WEARABLES_APP_SECRET:'test-only-app-secret'},
     outboundService:async request=>{destinations.push(new URL(request.url).hostname);return new Response(null,{status,headers:{Location:'https://untrusted.fixture/collect'}});}});
   try{await migrate(await instance.getD1Database('DB'));
@@ -272,7 +273,7 @@ test('edge transports refuse 302 and 307 redirects without forwarding administra
 });
 
 test('optional model runs only after consent and receives bounded authorized event context',async()=>{
-  const captured=[];const instance=new Miniflare({modules:true,scriptPath:'worker/index.js',compatibilityDate:'2026-07-30',d1Databases:['DB'],
+  const captured=[];const instance=new Miniflare({modules:true,script:await workerSource(),compatibilityDate:'2026-07-30',d1Databases:['DB'],
     bindings:{ENVIRONMENT:'test',TEST_NOW:NOW,AUTH_PEPPER:'test-only-32-character-server-pepper',COMPANION_MODEL_BASE_URL:'https://model.fixture/v1',COMPANION_MODEL_API_KEY:'test-only-model-key',COMPANION_MODEL:'fixture-model'},
     outboundService:async request=>{captured.push(await request.json());return new Response(JSON.stringify({choices:[{message:{content:'你记录的午餐有青菜豆腐。'}}]}),{headers:{'Content-Type':'application/json'}});}});
   try{await migrate(await instance.getD1Database('DB'));let token;

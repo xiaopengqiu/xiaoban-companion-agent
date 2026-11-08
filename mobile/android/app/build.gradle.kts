@@ -27,6 +27,21 @@ android {
         // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        // Public SDK client identifiers only. Server-side MasterSecret is never
+        // accepted as a build parameter or embedded in this application.
+        manifestPlaceholders["JPUSH_PKGNAME"] = applicationId!!
+        manifestPlaceholders["JPUSH_APPKEY"] = ""
+        manifestPlaceholders["JPUSH_CHANNEL"] = "xiaoban-free"
+        manifestPlaceholders["XIAOMI_APPID"] = ""
+        manifestPlaceholders["XIAOMI_APPKEY"] = ""
+        manifestPlaceholders["OPPO_APPID"] = ""
+        manifestPlaceholders["OPPO_APPKEY"] = ""
+        manifestPlaceholders["OPPO_APPSECRET"] = ""
+        val huawei = providers.gradleProperty("xiaobanHuaweiAppId").orElse("").get()
+        manifestPlaceholders["HUAWEI_APPID"] = if (huawei.isBlank()) "" else "appid=$huawei"
+        manifestPlaceholders["VIVO_APPID"] = providers.gradleProperty("xiaobanVivoAppId").orElse("").get()
+        manifestPlaceholders["VIVO_APPKEY"] = providers.gradleProperty("xiaobanVivoAppKey").orElse("").get()
+        manifestPlaceholders["HONOR_APPID"] = providers.gradleProperty("xiaobanHonorAppId").orElse("").get()
     }
 
     buildTypes {
@@ -35,6 +50,21 @@ android {
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
         }
+    }
+}
+
+dependencies {
+    implementation("cn.jiguang.sdk:jpush:6.3.0")
+    implementation("cn.jiguang.sdk:jcore:5.6.0")
+    implementation("cn.jiguang.sdk.plugin:huawei:6.3.0")
+    implementation("cn.jiguang.sdk.plugin:xiaomi:6.3.0")
+    implementation("cn.jiguang.sdk.plugin:oppo:6.3.0")
+    implementation("cn.jiguang.sdk.plugin:vivo:6.3.0")
+    implementation("cn.jiguang.sdk.plugin:honor:6.3.0")
+    // Reuse FlutterFire's resolved Firebase SDK instead of packaging an embedded
+    // second copy from the vendor extension.
+    implementation("cn.jiguang.sdk.plugin:fcm:6.3.0") {
+        exclude(group = "cn.jiguang.sdk.plugin", module = "fcm_th_push")
     }
 }
 

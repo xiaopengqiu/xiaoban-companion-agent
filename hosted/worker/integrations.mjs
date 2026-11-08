@@ -103,7 +103,7 @@ export async function verifyOWWebhook(payload,headers,secret,now=new Date()){
 }
 
 export async function sendFCM(env,deviceTokens,reminderId,fetcher=globalThis.fetch){
-  const configured=!!env.FCM_SERVICE_ACCOUNT_JSON,result={configured,sent:0,failed:0};
+  const configured=!!env.FCM_SERVICE_ACCOUNT_JSON,result={configured,sent:0,failed:0,sent_tokens:[],failed_tokens:[]};
   const tokens=[...new Set(deviceTokens.filter(value=>typeof value==='string'&&value))];
   if(!tokens.length)return {...result,status:'no_devices'};if(!configured)return {...result,status:'not_configured'};
   let account,oauth;
@@ -115,10 +115,10 @@ export async function sendFCM(env,deviceTokens,reminderId,fetcher=globalThis.fet
     const unsigned=head+'.'+body,signature=encoded(await crypto.subtle.sign('RSASSA-PKCS1-v1_5',key,encoder.encode(unsigned)));
     const response=await fetcher('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'urn:ietf:params:oauth:grant-type:jwt-bearer',assertion:unsigned+'.'+signature}).toString(),signal:AbortSignal.timeout(20000),redirect:'manual'});
     if(!response.ok)throw new Error('OAuth rejected');oauth=await response.json();if(!oauth.access_token)throw new Error('No token');
-  }catch{return {...result,failed:tokens.length,status:'credentials_error'};}
+  }catch{return {...result,failed:tokens.length,failed_tokens:tokens,status:'credentials_error'};}
   for(const token of tokens){try{
     const response=await fetcher(`https://fcm.googleapis.com/v1/projects/${encodeURIComponent(account.project_id)}/messages:send`,{method:'POST',headers:{Authorization:'Bearer '+oauth.access_token,'Content-Type':'application/json'},body:JSON.stringify({message:{token,notification:{title:'小伴有一条新提醒',body:'打开小伴，查看今天的陪伴消息。'},data:{reminder_id:String(reminderId)}}}),signal:AbortSignal.timeout(20000),redirect:'manual'});
-    if(response.ok&&(await response.json()).name)result.sent++;else result.failed++;
-  }catch{result.failed++;}}
+    if(response.ok&&(await response.json()).name){result.sent++;result.sent_tokens.push(token);}else{result.failed++;result.failed_tokens.push(token);}
+  }catch{result.failed++;result.failed_tokens.push(token);}}
   return {...result,status:result.sent&&!result.failed?'queued':result.sent?'partial':'failed'};
 }

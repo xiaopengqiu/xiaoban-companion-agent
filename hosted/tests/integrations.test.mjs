@@ -109,3 +109,24 @@ test('FCM signs a real service JWT and sends generic lockscreen text only',async
   const result=await sendFCM({FCM_SERVICE_ACCOUNT_JSON:JSON.stringify(account)},['device-token'],'reminder-id',fetcher);
   assert.equal(result.status,'queued');assert.equal(result.sent,1);assert.equal(fcmCalls,1);
 });
+
+test('FCM partial success identifies only failed devices for retry',async()=>{
+  const keys=await crypto.subtle.generateKey({name:'RSASSA-PKCS1-v1_5',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['sign','verify']);
+  const der=new Uint8Array(await crypto.subtle.exportKey('pkcs8',keys.privateKey));
+  const account={client_email:'test@example.iam.gserviceaccount.com',project_id:'test-project',private_key:'-----BEGIN PRIVATE KEY-----\n'+btoa(String.fromCharCode(...der))+'\n-----END PRIVATE KEY-----'};
+  const env={FCM_SERVICE_ACCOUNT_JSON:JSON.stringify(account)},sent=[];let retry=false;
+  const fetcher=async(url,init)=>{
+    if(url==='https://oauth2.googleapis.com/token')return reply({access_token:'test-oauth-token'});
+    const token=JSON.parse(init.body).message.token;sent.push(token);
+    return token==='failing-device'&&!retry?reply({error:{status:'UNAVAILABLE'}},503):reply({name:'projects/test-project/messages/accepted'});
+  };
+  const initial=await sendFCM(env,['accepted-device','failing-device','accepted-device'],'reminder-id',fetcher);
+  assert.equal(initial.status,'partial');assert.equal(initial.sent,1);assert.equal(initial.failed,1);
+  assert.deepEqual(initial.sent_tokens,['accepted-device']);assert.deepEqual(initial.failed_tokens,['failing-device']);
+  retry=true;sent.length=0;
+  const repeated=await sendFCM(env,initial.failed_tokens,'reminder-id',fetcher);
+  assert.equal(repeated.status,'queued');assert.deepEqual(sent,['failing-device']);
+  assert.deepEqual(repeated.sent_tokens,['failing-device']);assert.deepEqual(repeated.failed_tokens,[]);
+  const invalid=await sendFCM({FCM_SERVICE_ACCOUNT_JSON:'invalid-json'},['accepted-device','failing-device'],'reminder-id',()=>assert.fail('invalid credentials must not fetch'));
+  assert.equal(invalid.status,'credentials_error');assert.deepEqual(invalid.sent_tokens,[]);assert.deepEqual(invalid.failed_tokens,['accepted-device','failing-device']);
+});

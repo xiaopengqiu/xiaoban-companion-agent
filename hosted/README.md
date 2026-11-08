@@ -1,5 +1,9 @@
 # 小伴云端运行时
 
+在线网页和 Windows 在线模式支持真实模型流式回复、停止生成与中断提示。云端 POST `/api/chat` 通过 `Accept: text/event-stream` 返回 `delta` / `done` / `error` 事件，完成落库后才发送 `done`。停止或断流保留页面已显示的部分，但不保存成完整对话；不支持流式的模型网关仍按整段兼容。个人模型授权继续独立生效。原生 Android 与 Python 本机服务仍使用原 JSON 接口。
+
+浏览器后台通知使用 VAPID Web Push 和 Service Worker；云端检查通过与 Site 关联的定时任务运行。开启、关闭、测试通知及运行边界见 [后台陪伴说明](../docs/background-companion.md)。Android 原生 Firebase 推送仍需匹配的外部配置和新客户端构建。
+
 这是独立的 Cloudflare Worker + D1 服务，复用主项目 `web/` 界面和 `/api` 契约。账号、健康记录、记忆、对话与提醒存入服务端 D1；浏览器只保留登录令牌。它使用确定性的 JavaScript 策略适配器，不在 Worker 中运行 Python、LangGraph 或 Mem0。配置并经个人明确授权后，可调用兼容 Chat Completions 的外部模型。
 
 v0.3 增加个人理解和重要事情：记忆可分为偏好、目标、生活事实、近期处境、关系与陪伴边界；近期处境默认七天有效，可更正、续期或明确改为长期。过期内容不进入模型、健康提醒或此前对话上下文。日常分享只提供待确认入口，不自动保存推断出的事实。用户可选择先倾听、一起理清或讨论行动步骤。
@@ -25,7 +29,7 @@ D1 的 0000–0003 迁移由 `db/schema.js` 经 Drizzle 生成，SQL 和 `drizzl
 - 穿戴：`OPEN_WEARABLES_URL`、`OPEN_WEARABLES_API_KEY`、`OPEN_WEARABLES_APP_ID`、`OPEN_WEARABLES_APP_SECRET`、`OPEN_WEARABLES_PUBLIC_URL`。主机必须 HTTPS，管理员 key 不下发客户端；SDK token 由服务器绑定的用户 UUID 签发。同步回看 30 天，以 D1 batch 事务导入。
 - Webhook：`OPEN_WEARABLES_WEBHOOK_SECRET`，接收 `/api/integrations/open-wearables/webhook` 原始 Svix 签名请求。持久收据幂等，先反查绑定再拉取权威记录。删除记录留下来源屏蔽键，阻止重导；不修改手机健康平台里的原始数据。
 - FCM：`FCM_SERVICE_ACCOUNT_JSON`。推送目标只由服务器选择；锁屏文案不包含健康细节。`queued` 表示 FCM 接受请求，不代表设备已显示。没有凭证时只进入消息箱。
-- 调度：`CRON_TOKEN`（至少 32 个字符）保护 `POST /api/internal/evaluate`；也支持 Workers `scheduled` handler。导出 handler 不会自动开通定时器，必须另行配置平台或可信调度器。当前网页明确说明定时评估尚未开启。每次默认处理 2 个账号，持久游标轮转；`SCHEDULER_BATCH_SIZE` 可设置为 1–30，需先确认部署的 D1 查询预算。
+- 调度：`CRON_TOKEN`（至少 32 个字符）保护 `POST /api/internal/evaluate`；也支持 Workers `scheduled` handler。导出 handler 不会自动开通定时器，必须另行配置平台或可信调度器。公开站可使用关联的 Sites 云端任务调用受保护入口，运行状态由持久心跳反映。每次默认处理 2 个账号，持久游标轮转；`SCHEDULER_BATCH_SIZE` 可设置为 1–30，需先确认部署的 D1 查询预算。
 
 管理员也可以通过 `/api/admin/model-config` 选择 API 或管理员本地 Claude/Codex 网关；普通账号不能修改或测试模型服务。设置加密后保存到 D1 `service_state`，密钥不在公开状态或配置读回中返回。未保存设置时保留上述环境变量的兼容入口。`/api/internal/admin/grant` 仅用于服务端强 secret 保护的一次性管理员初始化，不能从注册表单传入管理员身份。云端“本地模式”连接的是管理员机器上的 HTTPS 网关，需要该机器、CLI 登录和网关保持运行，并非访问者浏览器里的本地模型。个人处理授权仍然独立生效；未配置或调用失败时明确回到规则模式。
 

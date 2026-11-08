@@ -138,6 +138,8 @@ def main():
     parser.add_argument('--source-commit')
     parser.add_argument('--before-inputs', type=Path)
     parser.add_argument('--previous-apk', type=Path)
+    parser.add_argument('--push-client-config', type=Path)
+    parser.add_argument('--verify-native-push', action='store_true')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--flutter-analyze-passed', action='store_true')
     parser.add_argument('--flutter-test-passed', action='store_true')
@@ -165,6 +167,10 @@ def main():
                                verified_checks=tuple(name for name, passed in [
                                    ('flutter-analyze', args.flutter_analyze_passed),
                                    ('flutter-test', args.flutter_test_passed)] if passed))
+    if args.verify_native_push:
+        from android_push_config import inspect_push_apk, load_config
+        report['native_push'] = inspect_push_apk(args.apk, load_config(args.push_client_config))
+        report['checks'].append('native-push-manifest-and-sdk')
     args.output.write_text(json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2) + '\n', encoding='utf-8')
     print(json.dumps({key: report[key] for key in ('version', 'version_code', 'size', 'sha256', 'certificate_sha256')}))
 

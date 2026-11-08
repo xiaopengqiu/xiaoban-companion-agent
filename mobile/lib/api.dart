@@ -63,7 +63,10 @@ class CompanionApi {
       request('POST', path, body);
   Future<Map<String, dynamic>> patch(String path, Map<String, dynamic> body) =>
       request('PATCH', path, body);
-  Future<Map<String, dynamic>> delete(String path) => request('DELETE', path);
+  Future<Map<String, dynamic>> delete(
+    String path, [
+    Map<String, dynamic>? body,
+  ]) => request('DELETE', path, body);
 
   Future<Map<String, dynamic>> request(
     String method,

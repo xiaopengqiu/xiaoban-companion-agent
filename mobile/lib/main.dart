@@ -101,6 +101,11 @@ class _CompanionAppState extends State<CompanionApp> {
     await health.disconnect();
     await push.disconnect();
     if (deleteAccount) await state!.api.delete('/me');
+    if (!deleteAccount) {
+      try {
+        await state?.api.post('/auth/logout', {});
+      } catch (_) {}
+    }
     await store.delete('token');
     final previous = state;
     if (mounted) setState(() => state = null);

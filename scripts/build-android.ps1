@@ -6,7 +6,8 @@ param(
     [string]$PreviousApk,
     [string]$FlutterPath,
     [string]$AndroidSdk,
-    [string]$JavaHome
+    [string]$JavaHome,
+    [string]$PublicPushClientConfig
 )
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path $PSScriptRoot -Parent
@@ -28,6 +29,13 @@ foreach ($taskRequired in @($FlutterPath, (Join-Path $AndroidSdk 'build-tools'),
 $taskPython = Join-Path $taskRoot '.venv-desktop\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $taskPython)) { $taskPython = Join-Path $taskRoot '.venv\Scripts\python.exe' }
 if (-not (Test-Path -LiteralPath $taskPython)) { $taskPython = (Get-Command python -ErrorAction Stop).Source }
+$taskPushArgs = @('-X','utf8',(Join-Path $taskRoot 'scripts\android_push_config.py'),'--gradle')
+if ($PublicPushClientConfig) {
+    if (-not [IO.Path]::IsPathRooted($PublicPushClientConfig)) { $PublicPushClientConfig = Join-Path $taskRoot $PublicPushClientConfig }
+    $taskPushArgs += @('--file',$PublicPushClientConfig)
+}
+$taskPushProperties = (& $taskPython @taskPushArgs | ConvertFrom-Json)
+if ($LASTEXITCODE -ne 0) { throw 'Invalid public push client build configuration' }
 if (-not $PreviousApk) {
     $taskLegacy = Join-Path $taskRoot 'artifacts\companion-android-debug.apk'
     if (Test-Path -LiteralPath $taskLegacy) { $PreviousApk = $taskLegacy }
@@ -54,6 +62,11 @@ foreach ($taskLetter in @('V','W','X','Y','Z','U','T','S','R')) {
 }
 if (-not $taskDrive) { throw 'No free temporary ASCII drive is available for Flutter tooling' }
 New-Item -ItemType Directory -Path $taskOutput -Force | Out-Null
+$taskPushSnapshot = Join-Path $taskOutput 'push-client-build-inputs.json'
+$taskPushSnapshotArgs = @('-X','utf8',(Join-Path $taskRoot 'scripts\android_push_config.py'))
+if ($PublicPushClientConfig) { $taskPushSnapshotArgs += @('--file',$PublicPushClientConfig) }
+& $taskPython @taskPushSnapshotArgs | Set-Content -LiteralPath $taskPushSnapshot -Encoding utf8
+if ($LASTEXITCODE -ne 0) { throw 'Cannot record public push client build inputs' }
 $taskBeforeInputs = Join-Path $taskOutput 'source-inputs-before.json'
 $taskReportHelper = Join-Path $taskRoot 'scripts\android_build_report.py'
 Push-Location $taskRoot
@@ -65,12 +78,19 @@ try {
 } finally { Pop-Location }
 $taskSavedEnvironment = @{}
 foreach ($taskName in @('JAVA_HOME','ANDROID_HOME','ANDROID_SDK_ROOT','Path')) { $taskSavedEnvironment[$taskName] = [Environment]::GetEnvironmentVariable($taskName, 'Process') }
+foreach ($taskProperty in $taskPushProperties.PSObject.Properties) {
+    $taskName = 'ORG_GRADLE_PROJECT_' + $taskProperty.Name
+    $taskSavedEnvironment[$taskName] = [Environment]::GetEnvironmentVariable($taskName, 'Process')
+}
 $taskMapped = $false
 try {
     $env:JAVA_HOME = $JavaHome
     $env:ANDROID_HOME = $AndroidSdk
     $env:ANDROID_SDK_ROOT = $AndroidSdk
     $env:Path = (Split-Path $FlutterPath -Parent) + ';' + (Join-Path $JavaHome 'bin') + ';' + $env:Path
+    foreach ($taskProperty in $taskPushProperties.PSObject.Properties) {
+        [Environment]::SetEnvironmentVariable(('ORG_GRADLE_PROJECT_' + $taskProperty.Name), $taskProperty.Value, 'Process')
+    }
     if ($PreviousApk) {
         & $taskPython -X utf8 $taskReportHelper --validate-previous-version-code --version-code $BuildNumber --previous-apk $PreviousApk
         if ($LASTEXITCODE -ne 0) { throw 'BuildNumber must increase over PreviousApk versionCode' }
@@ -100,6 +120,7 @@ try {
     Copy-Item -LiteralPath $taskBuiltApk -Destination $taskApk -Force
     $taskReportArgs = @('-X','utf8',$taskReportHelper,'--apk',$taskApk,'--version',$AppVersion,'--version-code',$BuildNumber,'--default-url',$PublicAppUrl,'--source-commit',$taskSourceCommit,'--before-inputs',$taskBeforeInputs,'--output',(Join-Path $taskOutput 'build-report.json'),'--flutter-analyze-passed','--flutter-test-passed')
     if ($PreviousApk) { $taskReportArgs += @('--previous-apk',$PreviousApk) }
+    $taskReportArgs += @('--verify-native-push','--push-client-config',$taskPushSnapshot)
     & $taskPython @taskReportArgs
     if ($LASTEXITCODE -ne 0) { throw 'Built APK package/signature/default URL/source verification failed' }
 } finally {

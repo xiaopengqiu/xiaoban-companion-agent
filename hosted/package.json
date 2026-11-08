@@ -13,5 +13,8 @@
     "drizzle-orm": "^0.44.0",
     "esbuild": "^0.28.2",
     "miniflare": "4.20260730.0"
+  },
+  "dependencies": {
+    "@block65/webcrypto-web-push": "2.0.0"
   }
 }

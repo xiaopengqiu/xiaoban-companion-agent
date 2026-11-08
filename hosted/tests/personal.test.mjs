@@ -2,6 +2,7 @@ import {before,after,test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {Miniflare} from 'miniflare';
+import {workerSource} from './fixtures/worker-source.mjs';
 const NOW='2026-11-08T06:00:00.000Z';
 const bindings={ENVIRONMENT:'test',TEST_NOW:NOW,AUTH_PEPPER:'test-only-32-character-server-pepper',AUTH_RATE_LIMIT:'1000'};
 let mf,db;
@@ -10,7 +11,7 @@ async function request(route,method='GET',data,token,instance=mf){const response
 async function ok(route,method='GET',data,token,instance=mf){const result=await request(route,method,data,token,instance);assert.equal(result.status,200,route+': '+JSON.stringify(result.data));return result.data;}
 async function account(instance=mf){return ok('/auth/register','POST',{name:'小林',email:crypto.randomUUID()+'@example.com',password:'a-very-long-password',consent_health_data:true},undefined,instance);}
 async function due(token,extra={}){const item=await ok('/threads','POST',{title:'周五的面试',details:'想聊聊准备情况',follow_up_enabled:true,follow_up_at:'2026-11-08T07:00:00Z',...extra},token);item.follow_up_at='2026-11-08T05:59:00.000Z';await db.prepare('UPDATE threads SET data=? WHERE id=?').bind(JSON.stringify(item),item.id).run();return item;}
-before(async()=>{mf=new Miniflare({modules:true,scriptPath:'worker/index.js',compatibilityDate:'2026-07-30',d1Databases:['DB'],bindings});db=await mf.getD1Database('DB');await migrate(db);});
+before(async()=>{mf=new Miniflare({modules:true,script:await workerSource(),compatibilityDate:'2026-07-30',d1Databases:['DB'],bindings});db=await mf.getD1Database('DB');await migrate(db);});
 after(async()=>{await mf?.dispose();});
 
 test('personal context is confirmed, expires, can be renewed and stays tenant scoped',async()=>{
@@ -106,7 +107,7 @@ test('life reminder transport sends only the scoped device a generic lockscreen 
  const keys=await crypto.subtle.generateKey({name:'RSASSA-PKCS1-v1_5',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['sign','verify']);
  const der=new Uint8Array(await crypto.subtle.exportKey('pkcs8',keys.privateKey));
  const service={client_email:'fixture@example.iam.gserviceaccount.com',project_id:'fixture',private_key:'-----BEGIN PRIVATE KEY-----\n'+btoa(String.fromCharCode(...der))+'\n-----END PRIVATE KEY-----'};
- const sent=[];const instance=new Miniflare({modules:true,scriptPath:'worker/index.js',compatibilityDate:'2026-07-30',d1Databases:['DB'],bindings:{...bindings,FCM_SERVICE_ACCOUNT_JSON:JSON.stringify(service)},outboundService:async req=>{
+ const sent=[];const instance=new Miniflare({modules:true,script:await workerSource(),compatibilityDate:'2026-07-30',d1Databases:['DB'],bindings:{...bindings,FCM_SERVICE_ACCOUNT_JSON:JSON.stringify(service)},outboundService:async req=>{
   if(new URL(req.url).hostname==='oauth2.googleapis.com')return new Response(JSON.stringify({access_token:'test-oauth-token'}));
   sent.push(await req.json());return new Response(JSON.stringify({name:'projects/fixture/messages/accepted'}));
  }});
@@ -119,7 +120,7 @@ test('life reminder transport sends only the scoped device a generic lockscreen 
 });
 
 test('model sees active threads and style, but cannot recover expired context through old chat',async()=>{
- const captured=[];const instance=new Miniflare({modules:true,scriptPath:'worker/index.js',compatibilityDate:'2026-07-30',d1Databases:['DB'],bindings:{...bindings,COMPANION_MODEL_BASE_URL:'https://model.fixture/v1',COMPANION_MODEL_API_KEY:'test-only-key',COMPANION_MODEL:'fixture'},outboundService:async req=>{captured.push(await req.json());return new Response(JSON.stringify({choices:[{message:{content:'想从哪部分开始聊？'}}]}));}});
+ const captured=[];const instance=new Miniflare({modules:true,script:await workerSource(),compatibilityDate:'2026-07-30',d1Databases:['DB'],bindings:{...bindings,COMPANION_MODEL_BASE_URL:'https://model.fixture/v1',COMPANION_MODEL_API_KEY:'test-only-key',COMPANION_MODEL:'fixture'},outboundService:async req=>{captured.push(await req.json());return new Response(JSON.stringify({choices:[{message:{content:'想从哪部分开始聊？'}}]}));}});
  try{const database=await instance.getD1Database('DB');await migrate(database);const a=await account(instance);
  await ok('/memories','POST',{text:'expired-sensitive-context',category:'context',expires_at:'2026-11-07T06:00:00Z'},a.token,instance);
  await ok('/memories','POST',{text:'喜欢先倾听',category:'boundary'},a.token,instance);

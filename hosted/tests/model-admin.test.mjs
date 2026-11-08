@@ -2,10 +2,11 @@ import {test,before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {Miniflare} from 'miniflare';
+import {workerSource} from './fixtures/worker-source.mjs';
 let mf,db;
 const secret='test-only-single-use-admin-setup-32chars';
 before(async()=>{
- mf=new Miniflare({modules:true,scriptPath:'worker/index.js',compatibilityDate:'2026-07-30',d1Databases:['DB'],bindings:{AUTH_PEPPER:'test-only-auth-pepper-at-least-32chars',ADMIN_SETUP_TOKEN:secret,AUTH_RATE_LIMIT:'1000'},outboundService:async request=>{
+ mf=new Miniflare({modules:true,script:await workerSource(),compatibilityDate:'2026-07-30',d1Databases:['DB'],bindings:{AUTH_PEPPER:'test-only-auth-pepper-at-least-32chars',ADMIN_SETUP_TOKEN:secret,AUTH_RATE_LIMIT:'1000'},outboundService:async request=>{
   const body=await request.json();assert.equal(body.model,'test-model');assert.equal(request.headers.get('Authorization'),'Bearer test-private-key');
   return Response.json({choices:[{message:{content:'连接成功'}}]});
  }});
@@ -54,7 +55,7 @@ test('administrators can list and delegate roles, ordinary users and demos canno
 
 test('concurrent self-demotion and deletion cannot remove the final administrator',async()=>{
  let upstreamCalls=0;
- const instance=new Miniflare({modules:true,scriptPath:'worker/index.js',compatibilityDate:'2026-07-30',d1Databases:['DB'],bindings:{AUTH_PEPPER:'test-only-32-character-server-pepper',ADMIN_SETUP_TOKEN:secret,AUTH_RATE_LIMIT:'1000',OPEN_WEARABLES_URL:'https://wearables.fixture',OPEN_WEARABLES_API_KEY:'test-only-admin-key'},outboundService:async()=>{upstreamCalls++;return new Response(null,{status:204});}});
+ const instance=new Miniflare({modules:true,script:await workerSource(),compatibilityDate:'2026-07-30',d1Databases:['DB'],bindings:{AUTH_PEPPER:'test-only-32-character-server-pepper',ADMIN_SETUP_TOKEN:secret,AUTH_RATE_LIMIT:'1000',OPEN_WEARABLES_URL:'https://wearables.fixture',OPEN_WEARABLES_API_KEY:'test-only-admin-key'},outboundService:async()=>{upstreamCalls++;return new Response(null,{status:204});}});
  try{const database=await instance.getD1Database('DB');for(const file of (await readdir('drizzle')).filter(x=>x.endsWith('.sql')).sort())for(const sql of (await readFile('drizzle/'+file,'utf8')).split('--> statement-breakpoint').map(s=>s.trim()).filter(Boolean))await database.prepare(sql).run();
   const a=await account(instance),b=await account(instance);
   assert.equal((await call('/internal/admin/grant','POST',{email:a.email},secret,instance)).status,200);

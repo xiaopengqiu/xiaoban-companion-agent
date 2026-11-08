@@ -40,7 +40,7 @@ def self_test(report: Path) -> None:
 
                 assert client.get('/api/health').json()['mode'] == 'local'
                 assert '小伴' in client.get('/').text
-                for path in ['/app.js', '/lifecycle.mjs', '/companion-ui.mjs']:
+                for path in ['/app.js', '/lifecycle.mjs', '/companion-ui.mjs', '/care-ui.mjs', '/chat-stream.mjs', '/push-client.mjs']:
                     asset = client.get(path)
                     assert asset.status_code == 200
                     assert 'javascript' in asset.headers.get('content-type', '')
@@ -50,6 +50,15 @@ def self_test(report: Path) -> None:
                 auth = request('POST', '/api/demo', json={})
                 headers = {'Authorization': 'Bearer ' + auth['token']}
                 assert client.get('/api/dashboard', headers=headers).status_code == 200
+                care = request('GET', '/api/care', headers=headers)
+                assert care['items'] == [] and care['unread_count'] == 0
+                assert request('GET', '/api/care/preferences', headers=headers)['enabled'] is False
+                assert client.patch('/api/care/preferences', headers=headers, json={'enabled': True}).status_code == 409
+                assert client.get('/api/admin/care-config', headers=headers).status_code == 403
+                assert client.get('/api/admin/push-config', headers=headers).status_code == 403
+                native = request('GET', '/api/push/native-config', headers=headers)
+                assert native['configured'] is False and 'master_secret' not in native
+                result['checks'].append('care-inbox-consent-admin-native-config')
 
                 memory = request('POST', '/api/memories', headers=headers,
                                  json={'text': '冻结自检：这周在筹备紫色风筝展', 'category': 'context'})

@@ -61,7 +61,7 @@ VSVersionInfo(ffi=FixedFileInfo(filevers=($taskVersionTuple), prodvers=($taskVer
     $taskEvidence = Get-Content -LiteralPath $taskReport -Raw | ConvertFrom-Json
     if ($taskEvidence.status -ne 'passed' -or -not $taskEvidence.frozen -or -not $taskEvidence.server_stopped) { throw 'Packaged evidence incomplete' }
     if ($taskEvidence.update_version -ne $AppVersion -or -not $taskEvidence.public_updates_disabled) { throw 'Packaged update configuration/version evidence incomplete' }
-    foreach ($taskCheck in @('bundled-js-modules','context-default-expiry-inactive-retrieval-renewal','thread-create-pause-complete-and-preferences','restart-sqlite-thread-memory-preferences-chat-state','thread-delete-account-cleanup')) {
+    foreach ($taskCheck in @('care-inbox-consent-admin-native-config','bundled-js-modules','context-default-expiry-inactive-retrieval-renewal','thread-create-pause-complete-and-preferences','restart-sqlite-thread-memory-preferences-chat-state','thread-delete-account-cleanup')) {
         if ($taskEvidence.checks -notcontains $taskCheck) { throw ('Packaged v0.3 evidence missing: ' + $taskCheck) }
     }
     if ($taskEvidence.port -ne $taskEvidence.restart_port) { throw 'Packaged HTTP restart origin changed' }

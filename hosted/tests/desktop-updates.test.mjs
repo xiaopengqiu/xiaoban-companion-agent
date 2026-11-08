@@ -5,6 +5,7 @@ import {generateKeyPairSync,createHash,verify} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {existsSync} from 'node:fs';
 import {Miniflare} from 'miniflare';
+import {workerSource} from './fixtures/worker-source.mjs';
 
 const origin='https://xiaoban-companion.abloom-haven-3343.chatgpt.site';
 const token='test-only-update-publisher-token-with-32-characters';
@@ -15,7 +16,7 @@ const digest=data=>createHash('sha256').update(data).digest('hex');
 const binary=Buffer.concat([Buffer.from('MZ'),Buffer.alloc(128*1024,7)]);
 const metadata=(data=binary,extra={})=>({sha256:digest(data),size:data.length,notes:'小伴更新：更安心地陪伴你 🌱\n保留原有数据。',platform:'windows-x64',...extra});
 async function instance(extra={}){
- const instance=new Miniflare({modules:true,scriptPath:'worker/index.js',compatibilityDate:'2026-07-30',d1Databases:['DB'],r2Buckets:['UPDATES'],bindings:{...bindings,...extra}});
+ const instance=new Miniflare({modules:true,script:await workerSource(),compatibilityDate:'2026-07-30',d1Databases:['DB'],r2Buckets:['UPDATES'],bindings:{...bindings,...extra}});
  const database=await instance.getD1Database('DB');
  for(const file of (await readdir('drizzle')).filter(x=>x.endsWith('.sql')).sort())for(const sql of (await readFile('drizzle/'+file,'utf8')).split('--> statement-breakpoint').map(s=>s.trim()).filter(Boolean))await database.prepare(sql).run();
  return instance;

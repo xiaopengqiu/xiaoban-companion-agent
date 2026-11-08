@@ -298,6 +298,9 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
 
     runtime=ModelRuntime(store)
     agent=CompanionAgent(model_runtime=runtime)
+    from .care import CareService, install_care
+    care_service=CareService(store,runtime,current_time)
+    care_service.scheduler_enabled=start_scheduler
     upstream_locks={}
     def upstream_lock(user_id):
         if user_id not in upstream_locks:
@@ -492,6 +495,7 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
                     raise
                 except Exception:
                     logger.warning('Background evaluation failed for a user; continuing other accounts')
+            await run_in_threadpool(care_service.scheduler_tick)
             await asyncio.sleep(60)
 
     @asynccontextmanager
@@ -500,6 +504,7 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
         try:
             yield
         finally:
+            care_service.closed=True
             if task:
                 task.cancel()
                 try:
@@ -584,6 +589,8 @@ def create_app(db_path=None,start_scheduler=False,clock=None,now=None,memory_ada
         return user
 
     install_model_admin(app,store,runtime,authenticated)
+    install_care(app,care_service,authenticated)
+    app.state.care_service=care_service
 
     def own(table,user,item_id):
         item=store.get(table,user['id'],item_id)
