@@ -1,0 +1,2 @@
+# Optional semantic memory. Install only after selecting private model/embedder settings.
+mem0ai==2.2.1

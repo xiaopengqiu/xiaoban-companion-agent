@@ -1,0 +1,16 @@
+.dart_tool/
+.flutter-plugins*
+.idea/
+build/
+*.iml
+android/local.properties
+android/.gradle/
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Generated.xcconfig
+ios/Flutter/flutter_export_environment.sh
+android/app/google-services.json
+ios/Runner/GoogleService-Info.plist
+lib/firebase_options.dart
+*.jks
+key.properties

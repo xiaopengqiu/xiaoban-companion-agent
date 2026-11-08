@@ -1,0 +1,12 @@
+.git
+.venv
+.env
+deploy/.env
+vendor
+data
+artifacts
+mobile
+tests
+__pycache__
+*.secrets.json
+mem0-config.json

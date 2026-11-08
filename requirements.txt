@@ -1,0 +1,10 @@
+fastapi>=0.115,<1
+uvicorn>=0.34,<1
+httpx>=0.28,<1
+langgraph>=1,<2
+pytest>=8,<10
+tzdata>=2025
+PyJWT[crypto]>=2.10,<3
+google-auth>=2.40,<3
+svix>=1.70,<2
+python-dotenv>=1,<2

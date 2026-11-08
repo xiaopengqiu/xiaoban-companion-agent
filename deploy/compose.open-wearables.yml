@@ -1,0 +1,94 @@
+# Adapted from Open Wearables 0.11.0 docs/deployment/docker.mdx (MIT).
+# Local integration stack; official images are fixed to the inspected release.
+name: companion-wearables
+x-backend: &backend
+  image: themomentum/open-wearables-backend:0.11.0
+  env_file: .env
+  environment:
+    DB_HOST: db
+    REDIS_HOST: redis
+    SENTRY_ENABLED: "false"
+    TELEMETRY_ENABLED: "false"
+  restart: unless-stopped
+
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: ${DB_NAME:-open-wearables}
+      POSTGRES_USER: ${DB_USER:-open-wearables}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Run scripts/bootstrap-open-wearables.ps1 first}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+  redis:
+    image: redis:8
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+  app:
+    <<: *backend
+    command: scripts/start/app.sh
+    ports:
+      - "127.0.0.1:${OW_API_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=5)"]
+      interval: 10s
+      timeout: 8s
+      retries: 30
+      start_period: 60s
+  celery-worker:
+    <<: *backend
+    command: scripts/start/worker.sh
+    stop_grace_period: 60s
+    depends_on:
+      app:
+        condition: service_healthy
+  celery-beat:
+    <<: *backend
+    command: scripts/start/beat.sh
+    depends_on:
+      app:
+        condition: service_healthy
+  frontend:
+    image: themomentum/open-wearables-frontend:0.11.0
+    environment:
+      VITE_API_URL: ${API_BASE_URL:-http://localhost:8000}
+      API_URL: http://app:8000
+    ports:
+      - "127.0.0.1:${OW_PORTAL_PORT:-3000}:3000"
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+  # Optional: --profile webhooks. Enable OUTGOING_WEBHOOKS_ENABLED in .env too.
+  # app.sh creates the svix database before the API becomes healthy.
+  svix-server:
+    image: svix/svix-server:v1.101.0
+    profiles: [webhooks]
+    command: ["--run-migrations"]
+    environment:
+      SVIX_JWT_SECRET: ${SECRET_KEY:?Run bootstrap first}
+      SVIX_DB_DSN: postgresql://${DB_USER:-open-wearables}:${DB_PASSWORD}@db:5432/svix
+      SVIX_QUEUE_TYPE: redis
+      SVIX_REDIS_DSN: redis://redis:6379/1
+      SVIX_CACHE_TYPE: redis
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
