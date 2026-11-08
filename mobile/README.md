@@ -30,13 +30,23 @@ flutter run -d YOUR_DEVICE_ID --dart-define=COMPANION_URL=http://192.168.1.20:87
 
 ## Android APK
 
-```sh
-flutter build apk --debug
+从 [GitHub v0.4.1 Release](https://github.com/xiaopengqiu/xiaoban-companion-agent/releases/tag/v0.4.1) 下载 `Xiaoban-Android-debug.apk`。该包使用完整 Flutter / 健康 SDK / Firebase 依赖，是调试签名的试用版，最低 Android10（API29），默认服务地址为 `https://xiaoban-companion.abloom-haven-3343.chatgpt.site`。已经保存的服务地址优先；需要切换时在登录页展开“服务地址”。
+
+当前 Android 原生界面覆盖基础登录/注册、聊天、记录、记忆和提醒，尚未同步 Web/Windows 后续全部近期处境、事情跟进和管理员界面。GitHub 同步上传 APK 不代表 Android 已实现应用内自动更新；系统安装和真实健康同步、推送仍需各自验收。
+
+在仓库根目录执行可重复构建入口：
+
+```powershell
+./scripts/build-android.ps1 -AppVersion 0.4.1 -BuildNumber 2 -PreviousApk artifacts/companion-android-debug.apk
 ```
 
-输出 `build/app/outputs/flutter-apk/app-debug.apk`，是本地试用的调试签名安装包。正式分发需要自己的签名、HTTPS 服务及商店声明，须替换生成模板中的 release 签名配置。
+`BuildNumber` 必须显式提供并高于上一 APK 的实际 `versionCode`。后续发布应将 `-PreviousApk` 指向上一个已发布 APK，保留相同签名身份。脚本执行 Flutter分析、11项源码测试、真实APK构建，再用 Android build-tools 读取包名/版本/SDK并验证v2签名；APK中的默认云地址、前后生产源码指纹也需一致。输出到 `artifacts/android/<版本>/Xiaoban-Android-debug.apk` 与 `build-report.json`，全部通过后才生成报告。
 
-2026-11-08 已在本机用完整健康 SDK / Firebase 依赖构建成功，APK 为177,902,350 bytes，APK v2签名验证通过；SHA256 `18afa3c35a4b75122ba899ec1d1370039f7b34e525431285b36173200fe578d6`。构建成功不等于已通过健康/推送真机验收。
+构建通过标准 `--build-name` / `--build-number` 设置0.4.1+2，不改写历史 tag 中 `pubspec.yaml` 的版本。默认 `PublicAppUrl` 指向小伴云端，可显式使用其他 HTTPS 地址。`-FlutterPath`、`-AndroidSdk`、`-JavaHome`、`-OutputDir` 可覆盖本机工具或输出路径。脚本临时选择空闲ASCII盘符，先用 `flutter clean` 清理当前项目生成输出，避免上次盘符写入的绝对路径缓存污染本次构建；全局 SDK、Pub 和 Gradle 缓存保留。退出时只移除自己创建且仍指向当前mobile目录的映射。
+
+后续 Windows / Android 必须通过统一客户端发布门禁，步骤见 [docs/client-releases.md](../docs/client-releases.md)。它会拒绝缺少一端的安装包、版本/摘要不匹配或签名不连续的发布。正式商店分发仍需要正式签名、HTTPS服务及相应商店声明，不把调试签名包当作已上架产品。
+
+本次实际包信息和验证记录见 [VERIFICATION.md](VERIFICATION.md)。旧本地0.1.0+1调试APK保留在忽略的 `artifacts/companion-android-debug.apk`，其摘要为 `18afa3c35a4b75122ba899ec1d1370039f7b34e525431285b36173200fe578d6`，不将旧文件重命名为新版。
 
 本次 Windows 已安装的工具：
 

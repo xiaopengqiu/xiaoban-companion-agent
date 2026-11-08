@@ -32,7 +32,7 @@ Windows 的“在线账户”访问这个云端服务；“本机数据”使用
 
 打开 **http://127.0.0.1:8765**，选择“用模拟数据体验”，即可进入独立演示账号。演示使用明确标识的合成记录，无需模型密钥、手表或外部服务。也可以注册真实的空白账号，从手动记录开始。
 
-本次已成功构建 Android 调试安装包，位于 `artifacts/companion-android-debug.apk`。安装后需在登录页配置手机可访问的陪伴服务地址；默认地址面向 Android 模拟器。真实手机和 iOS 设置见 [mobile/README.md](mobile/README.md)。
+Android 调试版可从 [v0.4.1 发布页](https://github.com/xiaopengqiu/xiaoban-companion-agent/releases/tag/v0.4.1) 下载 `Xiaoban-Android-debug.apk`，支持 Android 10 及以上。首次默认连接小伴云端，可与 Web 登录同一账号；已有的服务地址设置优先。APK 使用调试签名，真实手表同步和系统推送仍需真机联调。真实手机和 iOS 设置见 [mobile/README.md](mobile/README.md)。
 
 跨平台手动启动：
 
@@ -103,6 +103,8 @@ Worker 已实现需要服务端 secret 的 `POST /api/internal/evaluate`，也�
 Open Wearables 支持主动同步和可选签名 Webhook。具体接口、服务端凭证、签名和网络边界见 [docs/upstream.md](docs/upstream.md)。
 
 ## 验证
+
+客户端发布统一包含 Windows EXE、便携 ZIP 和 Android APK。使用 [双端发布流程](docs/client-releases.md) 中的构建与 `scripts/publish_clients.py` 门禁，缺任一平台的有效安装包就停止发布。此规则也记录在 [AGENTS.md](AGENTS.md)，后续客户端版本必须执行。
 
 ```powershell
 .\.venv\Scripts\python -m pytest -q
