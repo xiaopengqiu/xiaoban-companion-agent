@@ -19,6 +19,14 @@ test('no-contact analysis produces an empty inbox without a made-up companion me
   const html=renderCareInbox(view,{model_consent:true});assert.match(html,/暂时没有新的关心/);assert.doesNotMatch(html,/今天感觉怎样/);
   assert.deepEqual(calls.map(c=>c.path),['/care','/care/preferences']);
 });
+test('historical thread provenance is escaped and navigation requires an exact owned id',()=>{
+ const source={id:'thread-owned',title:'<img src=x onerror=alert(1)>',revision:1};
+ const view={selectedId:'care-a',detail:detail('care-a',{thread:{...thread(),source_thread:source}}),draft:''};
+ const linked=careUI.renderCareThread(view,[{id:'thread-owned',title:'renamed',revision:9}]);
+ assert.match(linked,/data-care-source="thread-owned"/);assert.doesNotMatch(linked,/<img/);assert.match(linked,/&lt;img/);
+ const missing=careUI.renderCareThread(view,[{id:'different',title:source.title,revision:1}]);
+ assert.doesNotMatch(missing,/data-care-source/);assert.match(missing,/&lt;img/);
+});
 
 test('switching account discards an in-flight private inbox and every draft',async()=>{
   const gate=deferred();const {inbox}=fixture(path=>path==='/care'?gate.promise:{enabled:true});

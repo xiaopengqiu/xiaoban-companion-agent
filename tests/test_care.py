@@ -5,6 +5,26 @@ import pytest
 from fastapi.testclient import TestClient
 
 from companion.app import create_app
+from companion.care import parse_decision
+
+
+def test_decision_contract_requires_exact_thread_selection_and_typed_evidence():
+    evidence = {
+        'm': {'type': 'memory', 'id': 'm'},
+        't': {'type': 'thread', 'id': 't', 'title': '面试', 'status': 'active', 'revision': 3},
+        't2': {'type': 'thread', 'id': 't2', 'title': '搬家', 'status': 'active', 'revision': 1},
+    }
+    false = {'should_contact': False, 'reason': '安静陪伴'}
+    assert parse_decision(json.dumps(false), evidence) == false
+    selected = {'should_contact': True, 'title': '还好吗', 'message': '愿意聊聊吗？',
+                'topic_key': 'interview', 'thread_id': 't', 'evidence_ids': ['t', 'm'], 'reason': '继续关注'}
+    assert parse_decision(json.dumps(selected), evidence) == selected
+    no_thread = {**selected, 'thread_id': None, 'evidence_ids': ['m']}
+    assert parse_decision(json.dumps(no_thread), evidence) == no_thread
+    for invalid in [{**false, 'title': '多余'}, {**selected, 'thread_id': None},
+                    {**selected, 'thread_id': 't2'}, {**selected, 'evidence_ids': ['t', 't2']}]:
+        with pytest.raises(ValueError, match='invalid_decision'):
+            parse_decision(json.dumps(invalid), evidence)
 
 
 @pytest.fixture
@@ -32,7 +52,8 @@ def care_case(tmp_path, monkeypatch):
         calls = []
         decision = {'should_contact': True, 'title': '面试前的准备',
                     'message': '明天要面试了，现在准备得怎么样？想一起理理重点吗？',
-                    'topic_key': 'interview-preparation', 'evidence_ids': [memory['id']], 'reason': '用户确认的近期处境'}
+                    'topic_key': 'interview-preparation', 'thread_id': None,
+                    'evidence_ids': [memory['id']], 'reason': '用户确认的近期处境'}
         def complete(messages):
             calls.append(messages)
             return json.dumps(decision, ensure_ascii=False)
@@ -80,6 +101,35 @@ def test_true_decision_creates_one_owned_thread_and_read_state(care_case):
     assert inbox(care_case)['unread_count'] == 0
     assert check(care_case)['created'] == 0
     assert len(inbox(care_case)['items']) == 1
+
+
+def test_selected_active_thread_is_snapshotted_and_legacy_source_is_normalized(care_case):
+    client, headers, _, memory, _, calls, decision = care_case
+    source = client.post('/api/threads', headers=headers, json={'title': '<面试 & 准备>', 'details': '周五'}).json()
+    decision.update(thread_id=source['id'], evidence_ids=[source['id'], memory['id']])
+    created = check(care_case)['care_id']
+    sent = json.loads(calls[0][1]['content'])['evidence'][source['id']]
+    assert sent['type'] == 'thread' and sent['status'] == 'active' and sent['revision'] == 1
+    detail = client.get('/api/care/' + created, headers=headers).json()
+    assert detail['thread']['source_thread'] == {'id': source['id'], 'title': source['title'], 'revision': 1}
+    with client.app.state.store.transaction():
+        row = client.app.state.store.connection.execute('SELECT data FROM care_threads WHERE id=?', (created,)).fetchone()
+        malformed = json.loads(row[0]); malformed['source_thread'] = {'id': source['id'], 'title': 5, 'revision': 1}
+        client.app.state.store.connection.execute('UPDATE care_threads SET data=? WHERE id=?', (json.dumps(malformed), created))
+    assert client.get('/api/care/' + created, headers=headers).json()['thread']['source_thread'] is None
+    assert inbox(care_case)['items'][0]['source_thread'] is None
+
+
+def test_source_revision_change_during_inference_prevents_care_commit(care_case, monkeypatch):
+    client, headers, user, memory, _, _, decision = care_case
+    source = client.post('/api/threads', headers=headers, json={'title': '面试', 'details': '第一版'}).json()
+    decision.update(thread_id=source['id'], evidence_ids=[source['id'], memory['id']])
+    def changed(_):
+        client.patch('/api/threads/' + source['id'], headers=headers, json={'details': '第二版'})
+        return json.dumps(decision, ensure_ascii=False)
+    monkeypatch.setattr(client.app.state.model_runtime, 'complete', changed)
+    assert client.app.state.care_service.evaluate(user, force=True)['reason_code'] == 'context_changed'
+    assert inbox(care_case)['items'] == []
 
 
 @pytest.mark.parametrize('mutation', ['foreign_evidence', 'bad_boolean', 'unknown_field', 'bad_json'])

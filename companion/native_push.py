@@ -161,7 +161,7 @@ class NativePush:
             self.store.connection.execute('DELETE FROM native_push_devices WHERE registration_id=? AND user_id=?', (registration, user_id))
         return {'unregistered': True}
 
-    def send(self, user_id, care_id='', *, test=False):
+    def send(self, user_id, care_id='', *, test=False, before_send=None):
         configured, registrations = False, []
         def result(status, sent=0):
             return {'status': status, 'configured': configured, 'queued': sent, 'sent': sent,
@@ -174,6 +174,18 @@ class NativePush:
             with self.store.lock:
                 registrations = [r[0] for r in self.store.connection.execute(
                     'SELECT registration_id FROM native_push_devices WHERE user_id=? AND config_revision=? LIMIT 5', (user_id, c['revision']))]
+            if not registrations:
+                return result('no_devices')
+            if before_send is not None and not before_send():
+                return result('cancelled')
+            latest = self.config()
+            if not (latest['enabled'] and latest['provider'] == 'jpush' and latest['app_key'] and
+                    latest['master_secret'] and latest['revision'] == c['revision']):
+                return result('cancelled')
+            with self.store.lock:
+                registrations = [r[0] for r in self.store.connection.execute(
+                    'SELECT registration_id FROM native_push_devices WHERE user_id=? AND config_revision=? LIMIT 5',
+                    (user_id, c['revision']))]
             if not registrations:
                 return result('no_devices')
             payload = {'platform': 'android', 'audience': {'registration_id': registrations},

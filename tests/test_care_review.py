@@ -53,6 +53,19 @@ def test_vendor_success_status_without_acceptance_id_is_not_reported_queued(care
     assert result.json()['sent'] == 0
 
 
+def test_native_push_before_send_cancels_before_network(care_case, monkeypatch):
+    from companion import native_push
+    client, headers, user, *_ = care_case
+    configured = client.patch('/api/admin/push-config', headers=headers, json={
+        'enabled': True, 'provider': 'jpush', 'app_key': 'a' * 24, 'master_secret': 'b' * 24}).json()
+    assert client.post('/api/push/devices', headers=headers, json={
+        'provider': 'jpush', 'registration_id': 'before-send-owned-rid',
+        'config_revision': configured['revision']}).status_code == 200
+    monkeypatch.setattr(native_push, 'http_client', lambda **_: pytest.fail('network must not start'))
+    result = client.app.state.care_service.push.send(user['id'], 'care-id', before_send=lambda: False)
+    assert result == {'status': 'cancelled', 'configured': True, 'queued': 0, 'sent': 0, 'failed': 0}
+
+
 def test_analysis_lease_expiry_discards_old_model_result(care_case, monkeypatch):
     client, _, _, _, clock, _, decision = care_case
     def delayed(_):

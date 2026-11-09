@@ -20,7 +20,7 @@ beforeEach(async()=>{
   else if(mode==='false')answer=JSON.stringify({should_contact:false,reason:'目前不需要额外打扰'});
   else if(mode==='malformed')answer='not json';
   else if(mode==='foreign')answer=JSON.stringify({should_contact:true,title:'关心一下',message:'你愿意聊聊吗？',topic_key:'interview',reason:'有依据',evidence_ids:['foreign-id']});
-  else answer=JSON.stringify({should_contact:true,title:'面试准备还顺利吗',message:'你提到这周在准备面试，愿意说说现在的感受吗？',topic_key:'interview',reason:'用户明确确认的近期处境',evidence_ids:[context.memories[0].id]});
+  else answer=JSON.stringify({should_contact:true,title:'面试准备还顺利吗',message:'你提到这周在准备面试，愿意说说现在的感受吗？',topic_key:'interview',thread_id:null,reason:'用户明确确认的近期处境',evidence_ids:[context.memories[0].id]});
   return Response.json({choices:[{message:{content:answer}}]});
  }});
  db=await mf.getD1Database('DB');for(const f of (await readdir('drizzle')).filter(f=>f.endsWith('.sql')).sort())for(const s of (await readFile('drizzle/'+f,'utf8')).split('--> statement-breakpoint').map(s=>s.trim()).filter(Boolean))await db.prepare(s).run();
@@ -56,8 +56,15 @@ test('care config CAS never silently loses an intervening administrator save',as
 
 test('disabling care between snapshot reads prevents a new care invitation',async()=>{
  const env=directEnv();let reads=0;const original=db.prepare.bind(db);env.DB={batch:db.batch.bind(db),prepare(sql){const stmt=original(sql);return {first:()=>stmt.first(),all:()=>stmt.all(),run:()=>stmt.run(),bind(...args){const bound=stmt.bind(...args);if(sql==='SELECT value FROM service_state WHERE state_key=?'&&args[0]==='care_settings')return {...bound,async first(){const row=await bound.first();if(++reads===1){const current=JSON.parse(row.value);await original('UPDATE service_state SET value=? WHERE state_key=?').bind(JSON.stringify({...current,enabled:false,revision:current.revision+1}),'care_settings').run();}return row;}};return bound;}};}};
- const previous=globalThis.fetch;globalThis.fetch=async(url,options)=>{const body=JSON.parse(options.body),context=JSON.parse(body.messages[1].content);return Response.json({choices:[{message:{content:JSON.stringify({should_contact:true,title:'only synthetic',message:'only synthetic invitation',topic_key:'fixture',evidence_ids:[context.memories[0].id],reason:'fixture'})}}]});};
+ const previous=globalThis.fetch;globalThis.fetch=async(url,options)=>{const body=JSON.parse(options.body),context=JSON.parse(body.messages[1].content);return Response.json({choices:[{message:{content:JSON.stringify({should_contact:true,title:'only synthetic',message:'only synthetic invitation',topic_key:'fixture',thread_id:null,evidence_ids:[context.memories[0].id],reason:'fixture'})}}]});};
  try{const result=await analyzeCareUser(env,admin.user.id,new Date(NOW),{force:true});assert.equal(result.created,0,JSON.stringify(result));}finally{globalThis.fetch=previous;}
+});
+
+test('final care insert SQL rejects a selected thread revision changed at commit',async()=>{
+ const source=await ok('/threads','POST',{title:'合成面试',details:'第一版'}),env=directEnv(),marked=new WeakSet(),prepare=db.prepare.bind(db),batch=db.batch.bind(db);
+ env.DB={prepare(sql){const stmt=prepare(sql);return {first:()=>stmt.first(),all:()=>stmt.all(),run:()=>stmt.run(),bind(...args){const bound=stmt.bind(...args);if(sql.startsWith('INSERT INTO care_threads'))marked.add(bound);return bound;}};},async batch(statements){if(statements.some(s=>marked.has(s)))await prepare("UPDATE threads SET data=json_set(data,'$.revision',2) WHERE id=?").bind(source.id).run();return batch(statements);}};
+ const previous=globalThis.fetch;globalThis.fetch=async(_url,options)=>{const context=JSON.parse(JSON.parse(options.body).messages[1].content);return Response.json({choices:[{message:{content:JSON.stringify({should_contact:true,title:'合成关心',message:'愿意聊聊吗？',topic_key:'fixture-thread',thread_id:source.id,evidence_ids:[source.id,context.memories[0].id],reason:'fixture'})}}]});};
+ try{const result=await analyzeCareUser(env,admin.user.id,new Date(NOW),{force:true});assert.equal(result.created,0);assert.equal(result.reason_code,'context_changed');assert.equal((await db.prepare('SELECT count(*) n FROM care_threads').first()).n,0);}finally{globalThis.fetch=previous;}
 });
 
 test('read care messages are not subsequently pushed when native transport becomes configured',async()=>{

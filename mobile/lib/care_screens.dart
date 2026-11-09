@@ -277,6 +277,14 @@ class _CareConversationPageState extends State<CareConversationPage>
                   padding: const EdgeInsets.all(18),
                   children: [
                     const Text('小伴会接着这条关心与你交流。', textAlign: TextAlign.center),
+                    if (detail?['thread']?['source_thread'] is Map)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Text(
+                          '这次关心源自在意的事：${detail!['thread']['source_thread']['title']}',
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
                     const SizedBox(height: 18),
                     ...care
                         .messages(id)

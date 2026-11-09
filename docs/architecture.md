@@ -50,6 +50,8 @@
 
 v0.3新增独立的用户范围 `threads` 表，保存重要事情的状态、进展、跟进授权与明确时间。线程更改会推进上下文版本并撤销旧提醒；生活跟进不要求有健康数据，但仍遵守免打扰与全局每日预算。近期处境有有效期，过期记忆及可能带回它的旧历史不再进入模型。
 
+AI 主动关心复用该 `threads` 模型，不创建第二套线程。模型证据具有 memory/thread/event 类型；一次判断最多选择一个 thread，并把当时的 `{id,title,revision}` 作为不可变历史来源写入关心会话。写入前及原生推送发网前都按用户、active 状态和精确 revision 权威复核，因此并发编辑、暂停、完成或删除会阻止过时的主动联系。历史来源标题仍可展示，但只有当前账号中精确匹配 id 的事情允许网页导航；标题或 revision 变化不影响按 id 导航。旧数据缺失或来源结构不合法时仅在读取层归一为 null，不回写数据库。
+
 模型服务由管理员统一选择，配置密钥以AES-GCM保存；用户的个人模型处理授权独立生效。Python可调用同机CLI，Worker通过受保护HTTPS网关访问服务器CLI。两者只提供有界文本生成，不给普通聊天传入任意命令或共享CLI会话。角色权限每次从数据库核验，授权写入与最后管理员保护有原子条件。详见 [model-services.md](model-services.md)。
 
 每条行为保存 `kind/value/unit/start_at/end_at/source/external_id/metadata`，服务端补充内部 id 和接收/更新时间。时间必须带 UTC offset。幂等键为 `(user_id, source, external_id)`；无外部 id 的手录是独立事件。原始来源、设备、粒度和 upstream 日标签保存在 metadata。心率原始流当前不进入首版分析器。

@@ -4,13 +4,13 @@ import {readFile,readdir} from 'node:fs/promises';
 import {Miniflare} from 'miniflare';
 import {workerSource} from './fixtures/worker-source.mjs';
 
-let mf,db,admin,other,mode,calls,pushes,hold,entered,pushHold,pushEntered;
+let mf,db,admin,other,mode,calls,pushes,hold,entered,pushHold,pushEntered,sourceFixture;
 const NOW='2026-11-08T06:00:00.000Z';
 async function call(path,method='GET',data,token=admin?.token){const r=await mf.dispatchFetch('https://fixture/api'+path,{method,headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},...(data===undefined?{}:{body:JSON.stringify(data)})});return {status:r.status,data:await r.json()};}
 async function ok(...args){const r=await call(...args);assert.equal(r.status,200,JSON.stringify(r));return r.data;}
 async function account(){return ok('/auth/register','POST',{name:'合成用户',email:crypto.randomUUID()+'@example.com',password:'a-long-test-password',consent_health_data:true},null);}
 beforeEach(async()=>{
- mode='false';calls=[];pushes=[];hold=null;entered=null;pushHold=null;pushEntered=null;
+ mode='false';calls=[];pushes=[];hold=null;entered=null;pushHold=null;pushEntered=null;sourceFixture=null;
  mf=new Miniflare({modules:true,script:await workerSource(),compatibilityDate:'2026-07-30',d1Databases:['DB'],bindings:{AUTH_PEPPER:'only-test-pepper-with-at-least-32-characters',AUTH_RATE_LIMIT:'1000',ENVIRONMENT:'test',TEST_NOW:NOW,CRON_TOKEN:'only-test-cron-token-at-least-32-characters',SCHEDULER_BATCH_SIZE:'30'},outboundService:async r=>{
   const b=await r.json();if(new URL(r.url).hostname==='api.jpush.cn'){pushes.push({body:b,authorization:r.headers.get('Authorization')});if(pushEntered)pushEntered();if(pushHold)await pushHold;return Response.json({msg_id:'queued-fixture-id',sendno:0});}
   calls.push(b);if(entered)entered();if(hold)await hold;
@@ -18,9 +18,13 @@ beforeEach(async()=>{
   const context=JSON.parse(b.messages.find(m=>m.role==='user').content);
   let answer;if(b.messages[0].content.includes('CARE_REPLY'))answer='我记得你在准备面试。现在最想先聊哪一部分？';
   else if(mode==='false')answer=JSON.stringify({should_contact:false,reason:'目前不需要额外打扰'});
+  else if(mode==='false-extra')answer=JSON.stringify({should_contact:false,reason:'目前不需要额外打扰',title:'多余字段'});
   else if(mode==='malformed')answer='not json';
   else if(mode==='foreign')answer=JSON.stringify({should_contact:true,title:'关心一下',message:'你愿意聊聊吗？',topic_key:'interview',reason:'有依据',evidence_ids:['foreign-id']});
-  else answer=JSON.stringify({should_contact:true,title:'面试准备还顺利吗',message:'你提到这周在准备面试，愿意说说现在的感受吗？',topic_key:'interview',reason:'用户明确确认的近期处境',evidence_ids:[context.memories[0].id]});
+  else if(mode==='duplicate')answer=JSON.stringify({should_contact:true,title:'关心一下',message:'你愿意聊聊吗？',topic_key:'interview',thread_id:null,reason:'有依据',evidence_ids:[context.memories[0].id,context.memories[0].id]});
+  else if(mode==='thread-mismatch')answer=JSON.stringify({should_contact:true,title:'关心一下',message:'你愿意聊聊吗？',topic_key:'interview',thread_id:'not-selected',reason:'有依据',evidence_ids:[context.memories[0].id]});
+  else if(mode==='thread')answer=JSON.stringify({should_contact:true,title:'接着聊聊',message:'愿意说说进展吗？',topic_key:'thread',thread_id:sourceFixture.id,evidence_ids:[sourceFixture.id,context.memories[0].id],reason:'持续关注'});
+  else answer=JSON.stringify({should_contact:true,title:'面试准备还顺利吗',message:'你提到这周在准备面试，愿意说说现在的感受吗？',topic_key:'interview',thread_id:null,reason:'用户明确确认的近期处境',evidence_ids:[context.memories[0].id]});
   return Response.json({choices:[{message:{content:answer}}]});
  }});
  db=await mf.getD1Database('DB');for(const f of (await readdir('drizzle')).filter(f=>f.endsWith('.sql')).sort())for(const s of (await readFile('drizzle/'+f,'utf8')).split('--> statement-breakpoint').map(s=>s.trim()).filter(Boolean))await db.prepare(s).run();
@@ -44,6 +48,11 @@ test('no-contact decision remains silent and advances the durable due time',asyn
  await ok('/internal/evaluate','POST',{},'only-test-cron-token-at-least-32-characters');assert.equal(calls.length,1);assert.equal(pushes.length,0);
  assert.equal((await db.prepare('SELECT count(*) n FROM care_messages').first()).n,0);
 });
+test('decision contract links exactly one selected active thread and snapshots provenance',async()=>{
+ const source=await ok('/threads','POST',{title:'<面试 & 准备>',details:'周五'});
+ sourceFixture=source;mode='thread';const id=(await ok('/admin/care-check','POST',{})).care_id,detail=await ok('/care/'+id);assert.deepEqual(detail.thread.source_thread,{id:source.id,title:source.title,revision:1});
+ await db.prepare("UPDATE care_threads SET data=json_set(data,'$.source_thread.title',json('5')) WHERE id=?").bind(id).run();assert.equal((await ok('/care/'+id)).thread.source_thread,null);assert.equal((await ok('/care')).items[0].source_thread,null);
+});
 test('true decision creates one tenant-scoped inbox thread, supports read and contextual idempotent replies',async()=>{
  mode='true';const created=await ok('/admin/care-check','POST',{});assert.equal(created.created,1);
  const list=await ok('/care');assert.equal(list.items.length,1);assert.equal(list.unread_count,1);assert.equal(list.items[0].source,'ai');
@@ -53,8 +62,8 @@ test('true decision creates one tenant-scoped inbox thread, supports read and co
  assert.equal((await ok('/care/'+id+'/reply','POST',data)).messages.length,3);assert.equal((await call('/care/'+id+'/reply','POST',{...data,message:'different'})).status,409);
  const second=await ok('/admin/care-check','POST',{});assert.equal(second.created,0);assert.equal(second.reason_code,'cooldown');
 });
-test('model errors, malformed output and foreign evidence never invent proactive messages',async()=>{
- for(const value of ['error','malformed','foreign']){mode=value;const r=await ok('/admin/care-check','POST',{});assert.equal(r.created,0);assert.ok(['model_error','invalid_decision'].includes(r.reason_code));}
+test('model errors and every inexact decision shape remain silent',async()=>{
+ for(const value of ['error','malformed','foreign','false-extra','duplicate','thread-mismatch']){mode=value;const r=await ok('/admin/care-check','POST',{});assert.equal(r.created,0);assert.ok(['model_error','invalid_decision'].includes(r.reason_code));}
  assert.equal((await ok('/care')).items.length,0);assert.equal(pushes.length,0);
 });
 test('pending reply survives unavailable model and same request safely retries without duplicating user input',async()=>{

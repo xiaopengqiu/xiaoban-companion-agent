@@ -18,6 +18,21 @@ class CareState extends ChangeNotifier {
   final Set<String> replying = {}, opening = {};
   int _listVersion = 0;
 
+  static Map<String, dynamic>? _source(dynamic value) {
+    if (value is! Map || value.length != 3) return null;
+    final source = Map<String, dynamic>.from(value);
+    if (source.keys.toSet().difference({'id', 'title', 'revision'}).isNotEmpty ||
+        source['id'] is! String || (source['id'] as String).isEmpty ||
+        source['title'] is! String || (source['title'] as String).isEmpty ||
+        source['revision'] is! int || (source['revision'] as int) < 1) {
+      return null;
+    }
+    return source;
+  }
+
+  static Map<String, dynamic> _thread(Map<String, dynamic> value) =>
+      {...value, 'source_thread': _source(value['source_thread'])};
+
   bool get enabled => status.containsKey('enabled')
       ? status['enabled'] == true
       : preferences['enabled'] == true;
@@ -52,7 +67,7 @@ class CareState extends ChangeNotifier {
       final value = await api.get('/care');
       final rows = decodeItems(value);
       if (_disposed || version != _listVersion) return;
-      threads = rows;
+      threads = rows.map(_thread).toList();
       unreadCount = value['unread_count'] is int
           ? value['unread_count'] as int
           : 0;
@@ -104,6 +119,7 @@ class CareState extends ChangeNotifier {
       final value = await api.get('/care/${Uri.encodeComponent(id)}');
       if (_disposed || _versions[id] != version) return;
       _validateDetail(value, id);
+      value['thread'] = _thread(decodeObject(value['thread']));
       _details[id] = value;
       detailErrors.remove(id);
       if (value['reply_status'] == 'complete') _attempts.remove(id);
@@ -192,6 +208,7 @@ class CareState extends ChangeNotifier {
       });
       if (_disposed) return;
       _validateDetail(value, id);
+      value['thread'] = _thread(decodeObject(value['thread']));
       _details[id] = value;
       if (value['reply_status'] == 'complete') _attempts.remove(id);
       if (_drafts[id]?.trim() == content) _drafts[id] = '';

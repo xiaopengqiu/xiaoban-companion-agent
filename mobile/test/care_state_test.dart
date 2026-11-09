@@ -63,6 +63,34 @@ void main() {
     },
   );
 
+  test('malformed legacy source thread is normalized to null in list and detail', () async {
+    final malformed = {'id': 't', 'title': 5, 'revision': 1};
+    final care = CareState(
+      CompanionApi(
+        'https://example.test',
+        client: MockClient((r) async => r.url.path == '/api/care'
+            ? jsonResponse({
+                'items': [
+                  {'id': 'c', 'source_thread': malformed},
+                ],
+                'unread_count': 0,
+                'status': {},
+              })
+            : r.url.path.endsWith('/read')
+            ? jsonResponse({'read': true})
+            : jsonResponse({
+                'thread': {'id': 'c', 'source_thread': malformed},
+                'messages': <Map<String, dynamic>>[],
+              })),
+      ),
+    );
+    await care.refresh();
+    expect(care.threads.single['source_thread'], isNull);
+    await care.open('c');
+    expect(care.detail('c')!['thread']['source_thread'], isNull);
+    care.dispose();
+  });
+
   test(
     'older service care failure does not break base application state',
     () async {

@@ -105,7 +105,7 @@ void main() {
             });
           }
           return response({
-            'thread': {'id': 'c', 'title': '明天面试，想听听你的感受'},
+            'thread': {'id': 'c', 'title': '明天面试，想听听你的感受', 'source_thread': {'id': 't', 'title': '原来的面试标题', 'revision': 1}},
             'messages': [
               {'id': 'a', 'role': 'assistant', 'content': '这次想怎么准备？'},
             ],
@@ -122,6 +122,7 @@ void main() {
       await tester.tap(find.text('明天面试，想听听你的感受'));
       await tester.pumpAndSettle();
       expect(find.text('这次想怎么准备？'), findsOneWidget);
+      expect(find.textContaining('原来的面试标题'), findsOneWidget);
       await tester.enterText(
         find.byKey(const Key('care-reply-input')),
         '有些紧张，想一起理清',
